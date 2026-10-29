@@ -288,7 +288,7 @@ export default {
     // What the itinerary needs to know about this trip
     itineraryInfo() {
       if (this.isDemo) return { destination: 'Seoul, South Korea', destinations: ['Seoul, South Korea'], travellers: ['Sarah', 'John', 'Amy'], startDate: '2026-10-12', endDate: '2026-10-17', stops: [], wishlist: [] }
-      const t = this.trip
+      const t = this.trip || {} // null while loading, or when the trip was not found
       return { destination: t.destination, destinations: t.destinations && t.destinations.length ? t.destinations : [t.destination], travellers: t.travellers || [], startDate: t.startDate, endDate: t.endDate, stops: t.stops || [], wishlist: t.wishlist || [] }
     },
     // The Recap tab only appears once the trip is over

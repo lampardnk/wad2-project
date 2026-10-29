@@ -1,6 +1,6 @@
 import express from 'express'
 import { requireAuth } from './auth.js'
-import { askOverpassFast } from './places.js'
+import { askOverpassFast, nominatim } from './places.js'
 
 // Safety tab helpers. These run on our server (not in the browser) so that:
 //  - busy OpenStreetMap servers are retried and results are cached (no more 504s in the browser)
@@ -23,10 +23,36 @@ const round = (n) => Math.round(Number(n) * 1000) / 1000
 
 // Photon (OpenStreetMap search). lang 'default' gives local names, e.g. Japanese.
 async function photon(params) {
-  const url = 'https://photon.komoot.io/api/?' + new URLSearchParams(params)
-  const res = await fetch(url, { headers: HEADERS, signal: AbortSignal.timeout(8000) })
-  if (!res.ok) throw new Error('Photon ' + res.status)
-  return res.json()
+  try {
+    const url = 'https://photon.komoot.io/api/?' + new URLSearchParams(params)
+    const res = await fetch(url, { headers: HEADERS, signal: AbortSignal.timeout(8000) })
+    if (!res.ok) throw new Error('Photon ' + res.status)
+    return await res.json()
+  } catch (err) {
+    // Photon is busy or refusing us: Nominatim has the same OpenStreetMap places (answer reshaped like Photon's)
+    const q = { q: params.q, limit: params.limit || '5', addressdetails: '1' }
+    if (params.lang !== 'default') q['accept-language'] = 'en'
+    if (params.lat) {
+      const lat = Number(params.lat)
+      const lon = Number(params.lon)
+      q.viewbox = [lon - 0.3, lat + 0.3, lon + 0.3, lat - 0.3].join(',')
+      if (params.osm_tag) q.bounded = '1' // "hospital" etc.: only ones around here
+    }
+    const list = await nominatim(q)
+    return {
+      features: list.map((r) => {
+        const a = r.address || {}
+        return {
+          geometry: { coordinates: [Number(r.lon), Number(r.lat)] },
+          properties: {
+            name: r.name || (r.display_name || '').split(',')[0], osm_id: r.osm_id, osm_value: r.addresstype,
+            housenumber: a.house_number, street: a.road, district: a.suburb || a.neighbourhood,
+            city: a.city || a.town || a.village, postcode: a.postcode, country: a.country, countrycode: a.country_code
+          }
+        }
+      })
+    }
+  }
 }
 
 function addressOf(p) {

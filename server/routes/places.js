@@ -42,7 +42,7 @@ router.get('/', requireAuth, async (req, res) => {
   } catch (err) {
     // Photon is busy or refusing us: ask Nominatim instead (the same OpenStreetMap places)
     try {
-      const list = await getMapJson('https://nominatim.openstreetmap.org/search?' + new URLSearchParams({ q, format: 'jsonv2', limit: '10', addressdetails: '1', 'accept-language': 'en' }))
+      const list = await nominatim({ q, limit: '10', addressdetails: '1', 'accept-language': 'en' })
       data = { features: list.map((r) => ({ properties: { name: r.name, country: (r.address || {}).country, countrycode: (r.address || {}).country_code, osm_value: r.addresstype } })) }
     } catch {
       return res.status(502).json({ message: 'Place search is unavailable right now.' })
@@ -286,7 +286,7 @@ router.get('/attractions', requireAuth, async (req, res) => {
       place = geo.features && geo.features[0]
     } catch (err) {
       // Photon is busy or refusing us: Nominatim knows the same OpenStreetMap places
-      const r = (await getMapJson('https://nominatim.openstreetmap.org/search?' + new URLSearchParams({ q: destination, format: 'jsonv2', limit: '1', 'accept-language': 'en' })))[0]
+      const r = (await nominatim({ q: destination, limit: '1', 'accept-language': 'en' }))[0]
       if (r) place = { geometry: { coordinates: [Number(r.lon), Number(r.lat)] }, properties: { osm_type: r.osm_type === 'relation' ? 'R' : '', osm_id: r.osm_id, osm_value: r.addresstype } }
     }
     if (!place) return res.json([])
@@ -584,6 +584,14 @@ async function getMapJson(url) {
   throw lastError
 }
 
+// Nominatim allows one request a second (its usage policy), so our calls queue up 1.1 s apart
+let nominatimTurn = Promise.resolve()
+export function nominatim(params) {
+  const turn = nominatimTurn.then(() => getMapJson('https://nominatim.openstreetmap.org/search?' + new URLSearchParams({ format: 'jsonv2', ...params })))
+  nominatimTurn = turn.catch(() => {}).then(() => new Promise((resolve) => setTimeout(resolve, 1100)))
+  return turn
+}
+
 // Nominatim (OpenStreetMap's own search) answers in a different shape: turn it into Photon's
 function fromNominatim(list) {
   const features = []
@@ -649,7 +657,7 @@ async function findCentre(destination) {
     if (f) centre = { lon: f.geometry.coordinates[0], lat: f.geometry.coordinates[1], isCountry: f.properties.osm_value === 'country' }
   } catch (err) {
     console.warn('Photon could not find', destination + ':', err.message, '(trying Nominatim)')
-    const list = await getMapJson('https://nominatim.openstreetmap.org/search?' + new URLSearchParams({ q: destination, format: 'jsonv2', limit: '1', 'accept-language': 'en' }))
+    const list = await nominatim({ q: destination, limit: '1', 'accept-language': 'en' })
     if (list[0]) centre = { lon: Number(list[0].lon), lat: Number(list[0].lat), isCountry: list[0].addresstype === 'country' }
   }
   if (centre) centres.set(destination, centre)
@@ -681,14 +689,14 @@ router.get('/search', requireAuth, async (req, res) => {
     } catch (err) {
       // Photon is busy or down: ask Nominatim instead (slower, but the same OpenStreetMap places)
       console.warn('Photon place search failed:', err.message, '(trying Nominatim)')
-      const params = { q, format: 'jsonv2', limit: '20', addressdetails: '1', 'accept-language': 'en' }
+      const params = { q, limit: '20', addressdetails: '1', 'accept-language': 'en' }
       if (!centre.isCountry) {
         params.viewbox = [box[0], box[3], box[2], box[1]].join(',') // left,top,right,bottom
         params.bounded = '1'
       } else {
         params.q = q + ', ' + near
       }
-      data = fromNominatim(await getMapJson('https://nominatim.openstreetmap.org/search?' + new URLSearchParams(params)))
+      data = fromNominatim(await nominatim(params))
     }
   } catch (err) {
     console.error('Place search failed for "' + q + '" near ' + near + ':', err.message)

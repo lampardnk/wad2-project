@@ -1,6 +1,7 @@
 import express from 'express'
 import Forecast from '../models/Forecast.js'
 import { requireAuth } from './auth.js'
+import { nominatim } from './places.js'
 
 const router = express.Router()
 const CACHE_DAYS = 30 // BestTime forecasts stay accurate for several weeks
@@ -72,9 +73,7 @@ async function findNearby(name, address, lat, lon) {
   try {
     // 1. Get coordinates if BestTime didn't give them
     if (typeof lat !== 'number' || typeof lon !== 'number') {
-      const url = 'https://nominatim.openstreetmap.org/search?' +
-        new URLSearchParams({ q: name + ', ' + address, format: 'json', limit: '1' })
-      const geo = await (await fetch(url, { headers: OSM_HEADERS, signal: AbortSignal.timeout(8000) })).json()
+      const geo = await nominatim({ q: name + ', ' + address, limit: '1' })
       if (!geo.length) return []
       lat = Number(geo[0].lat)
       lon = Number(geo[0].lon)

@@ -41,3 +41,18 @@ test('destination search falls back to Nominatim when Photon is down', async () 
     globalThis.fetch = realFetch
   }
 })
+
+// Nominatim's usage policy: at most one request a second
+test('Nominatim calls are spaced at least a second apart', async () => {
+  const { nominatim } = await import('../routes/places.js')
+  const realFetch = globalThis.fetch
+  const times = []
+  globalThis.fetch = async () => { times.push(Date.now()); return { ok: true, json: async () => [] } }
+  try {
+    await Promise.all([nominatim({ q: 'a' }), nominatim({ q: 'b' }), nominatim({ q: 'c' })])
+    assert.equal(times.length, 3)
+    assert.ok(times[1] - times[0] >= 1000 && times[2] - times[1] >= 1000)
+  } finally {
+    globalThis.fetch = realFetch
+  }
+})

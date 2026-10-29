@@ -63,7 +63,7 @@ import axios from 'axios'
 import WishlistView from '../components/WishlistView.vue'
 import PlacesVoting from '../components/PlacesVoting.vue'
 import TripShare from '../components/TripShare.vue'
-import { trip, loadFromServer, savedShape, saveTrip } from '../itineraryStore.js'
+import { loadFromServer, savedShape, saveTrip } from '../itineraryStore.js'
 import LoadingSkeleton from '../components/LoadingSkeleton.vue'
 
 export default {

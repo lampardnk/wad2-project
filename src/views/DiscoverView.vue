@@ -708,9 +708,6 @@ function pillarData() {
   })
   return { pillars: { type: 'FeatureCollection', features }, points: { type: 'FeatureCollection', features: points } }
 }
-function indexOf(id) {
-  return visibleCities.value.findIndex((c) => c.id === id)
-}
 // Light up the hovered pillar (and every pillar of a hovered country), mark liked ones
 function paintStates() {
   if (!map || !map.getSource('dx-pillars')) return

@@ -224,7 +224,6 @@ import axios from 'axios'
 import ItineraryView from '../components/ItineraryView.vue'
 import WishlistView from '../components/WishlistView.vue'
 import PlacesVoting from '../components/PlacesVoting.vue'
-import GroupVoting from '../components/GroupVoting.vue'
 import PackingView from '../components/PackingView.vue'
 import PhotosView from '../components/PhotosView.vue'
 import ExpensesView from '../components/ExpensesView.vue'
@@ -248,7 +247,7 @@ import { localDate } from '../dates.js'
 
 
 export default {
-  components: { LoadingSkeleton, TripRecap, TripEditModal, AppIcon, ItineraryView, WishlistView, PlacesVoting, GroupVoting, PackingView, PhotosView, ExpensesView, SafetyLayer, FlightDelayWidget, TransportOptions, TripShare, CrewView, TripTabs, TabIcon },
+  components: { LoadingSkeleton, TripRecap, TripEditModal, AppIcon, ItineraryView, WishlistView, PlacesVoting, PackingView, PhotosView, ExpensesView, SafetyLayer, FlightDelayWidget, TransportOptions, TripShare, CrewView, TripTabs, TabIcon },
   props: { id: { type: String, default: 'seoul' } }, // from the route /trip/:id
   data() {
     return {

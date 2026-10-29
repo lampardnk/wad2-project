@@ -60,7 +60,7 @@
 </template>
 
 <script setup>
-import { ref, reactive, computed } from 'vue'
+import { reactive, computed } from 'vue'
 import { PERSONAS } from '../crewOptions.js'
 import DietTagsInput from './DietTagsInput.vue'
 import PhoneInput from './PhoneInput.vue'

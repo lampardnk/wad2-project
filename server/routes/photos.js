@@ -1,6 +1,5 @@
 import express from 'express'
 import mongoose from 'mongoose'
-import Trip from '../models/trip.js'
 import Photo from '../models/Photo.js'
 import { requireAuth } from './auth.js'
 import { findTripFor, memberName } from '../tripAccess.js'

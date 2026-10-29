@@ -18,9 +18,6 @@ function remember(map, key, value) {
   map.set(key, value)
 }
 
-// Round to 3 decimals (about 100 m): enough for safety info, kinder to privacy, and cache-friendly
-const round = (n) => Math.round(Number(n) * 1000) / 1000
-
 // Photon (OpenStreetMap search). lang 'default' gives local names, e.g. Japanese.
 async function photon(params) {
   // Photon is slow or refusing us: Nominatim has the same OpenStreetMap places (answer reshaped like Photon's)

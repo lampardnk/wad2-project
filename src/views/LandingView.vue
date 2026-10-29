@@ -405,7 +405,7 @@
                 <div><b>Tue 19 Nov</b><small>4 stops · 7.2 km</small></div>
                 <span class="ph-opt">✦ Optimize</span>
               </div>
-              <template v-for="(t, n) in PHONE_STOPS" :key="t.name">
+              <template v-for="t in PHONE_STOPS" :key="t.name">
                 <div class="ph-stop" :class="{ meal: t.meal }">
                   <span class="ph-thumb" :style="{ background: t.bg }">{{ t.icon }}</span>
                   <div class="ph-stop-text">

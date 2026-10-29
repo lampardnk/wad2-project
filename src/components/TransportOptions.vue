@@ -130,14 +130,6 @@
     }
 
     async function loadOptions() {
-        console.log('🚆 loadOptions() called', {
-            startPoint: startPoint.value,
-            endPoint: endPoint.value,
-            selectedDay: selectedDay.value,
-            selectedTime: selectedTime.value,
-            timeZone: timeZone.value
-        });
-
         // Make sure start and destination exist
         if (!startPoint.value || !endPoint.value) {
             options.value = [];
@@ -150,11 +142,6 @@
             // Get addresses
             const origin = addressOf(startPoint.value);
             const destination = addressOf(endPoint.value);
-
-            console.log('📍 Directions addresses:', {
-                origin,
-                destination
-            });
 
             // If address could not be resolved
             if (!origin || !destination) {

@@ -1702,9 +1702,6 @@ function formatHour(h) {
   const min = Math.round((h - Math.floor(h)) * 60)
   return (hour % 12 === 0 ? 12 : hour % 12) + ':' + String(min).padStart(2, '0') + (hour >= 12 ? ' PM' : ' AM')
 }
-function shortDate(d) {
-  return new Date(d + 'T00:00:00').toLocaleDateString('en-SG', { day: 'numeric', month: 'short' })
-}
 function durationText(h) {
   const hrs = h || 1
   if (hrs < 1) return Math.round(hrs * 60) + ' min'

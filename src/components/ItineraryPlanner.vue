@@ -1166,7 +1166,8 @@ function scheduleWish(w, slot, confirmed = false) {
   const fresh = toWork({ id: '__new', name: w.name, address: w.address || null, outdoor: !!w.outdoor, duration: w.duration || 1.5, lat: w.lat, lon: w.lon, hour: 0 })
   const list = stopRows.value.map((it) => it.stop)
   list.splice(slot, 0, fresh)
-  const changes = retime(list).map((it) => ({ id: it.stop.id, hour: it.start }))
+  // A far-away last stop can land past midnight: keep it on this day, like the other edits do
+  const changes = retime(list).map((it) => ({ id: it.stop.id, hour: Math.min(it.start, 23.75) }))
   if (sampleMode.value) {
     const id = 'p-' + Date.now().toString(36)
     sample.value.stops.push({ ...w, id, date: sample.value.day, duration: w.duration || 1.5, locked: false, hour: 0 })

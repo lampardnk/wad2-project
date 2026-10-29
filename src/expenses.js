@@ -128,8 +128,19 @@ export function demoExpenses() {
   }
 }
 
+// Every ISO currency the browser knows: lets the group set its own rate for one the live rates
+// don't cover (the ECB has no TWD, for example)
+export function allCurrencyCodes() {
+  try {
+    return Intl.supportedValuesOf('currency')
+  } catch (err) {
+    return []
+  }
+}
+
 // Currency codes with their names, for dropdowns: { value: 'JPY', label: 'JPY', description: 'Japanese Yen' }
-export function currencyOptions() {
+// The common ones first, then any other code we have a live rate for (e.g. TWD for Taiwan)
+export function currencyOptions(more = []) {
   let names = null
   try {
     names = new Intl.DisplayNames(['en'], { type: 'currency' })
@@ -137,7 +148,8 @@ export function currencyOptions() {
     names = null
   }
   const list = []
-  for (const c of CURRENCIES) {
+  const extra = more.filter((c) => /^[A-Z]{3}$/.test(c) && !CURRENCIES.includes(c)).sort()
+  for (const c of CURRENCIES.concat(extra)) {
     list.push({ value: c, label: c, description: names ? names.of(c) : '' })
   }
   return list

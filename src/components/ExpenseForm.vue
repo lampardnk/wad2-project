@@ -122,7 +122,6 @@ export default {
     return {
       CATEGORIES,
       CURRENCIES,
-      currencyOptions: currencyOptions(),
       tried: false,
       confirmDelete: false,
       form: {
@@ -140,6 +139,9 @@ export default {
   },
 
   computed: {
+    currencyOptions() {
+      return currencyOptions(Object.keys(this.rates))
+    },
     payerOptions() {
       const list = []
       for (const p of this.travellers) list.push({ value: p, label: p + (p === this.me ? ' (you)' : '') })

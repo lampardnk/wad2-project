@@ -1,7 +1,7 @@
 // Expenses: balances stay right when the trip's currency changes
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { balances, toHome } from '../src/expenses.js'
+import { balances, toHome, currencyOptions, allCurrencyCodes } from '../src/expenses.js'
 
 const dinner = { amount: 30, currency: 'SGD', paidBy: 'Amy', splitType: 'equal', people: ['Amy', 'Ben', 'Cat'], exact: {} }
 const rates = { SGD: 1, JPY: 110 } // 1 SGD = 110 JPY
@@ -26,4 +26,15 @@ test('older payments without a currency count as the trip currency', () => {
 
 test('a budget set in SGD converts to JPY', () => {
   assert.equal(toHome(500, 'SGD', { SGD: 1 / 110 }, 'JPY'), 55000)
+})
+
+test('currency list adds codes we have live rates for, once each', () => {
+  const codes = currencyOptions(['TWD', 'SGD', 'VND']).map((o) => o.value)
+  assert.ok(codes.includes('TWD') && codes.includes('VND'))
+  assert.equal(codes.filter((c) => c === 'SGD').length, 1)
+  assert.equal(codes[0], 'SGD') // common ones stay first
+})
+
+test('a group rate can be set for any ISO currency, e.g. TWD', () => {
+  assert.ok(allCurrencyCodes().includes('TWD'))
 })

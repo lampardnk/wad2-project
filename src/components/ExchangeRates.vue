@@ -82,7 +82,7 @@
 
 <script setup>
 import { ref, computed, nextTick, onMounted, onBeforeUnmount } from 'vue'
-import { currencyOptions, money } from '../expenses.js'
+import { currencyOptions, allCurrencyCodes, money } from '../expenses.js'
 import CustomDropdown from './CustomDropdown.vue'
 import AppIcon from './AppIcon.vue'
 
@@ -104,7 +104,7 @@ const draftFor = ref(null)
 const draft = ref('')
 const added = ref([])
 const NAMES = {}
-for (const o of currencyOptions()) NAMES[o.value] = o.description
+for (const o of currencyOptions(allCurrencyCodes())) NAMES[o.value] = o.description
 
 // Group rates only count for the currency totals are shown in
 function groupFor(code) {
@@ -129,7 +129,7 @@ const rows = computed(() => {
     return { code, name: NAMES[code] || '', live, group, used: group ? group.rate : live }
   })
 })
-const otherCurrencies = computed(() => currencyOptions().filter((o) => o.value !== props.home && !rows.value.some((r) => r.code === o.value)))
+const otherCurrencies = computed(() => currencyOptions(allCurrencyCodes()).filter((o) => o.value !== props.home && !rows.value.some((r) => r.code === o.value)))
 
 function addCurrency(code) {
   if (!code) return

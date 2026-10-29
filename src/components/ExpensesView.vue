@@ -260,7 +260,6 @@ export default {
     return {
       CATEGORIES,
       CURRENCIES,
-      currencyOptions: currencyOptions(),
       categoryOptions: [{ value: '', label: 'All categories', icon: '🗂' }].concat(CATEGORIES.map((c) => ({ value: c.key, label: c.label, icon: c.icon }))),
       demo,
       state: {
@@ -289,6 +288,9 @@ export default {
   },
 
   computed: {
+    currencyOptions() {
+      return currencyOptions(Object.keys(this.liveRates))
+    },
     // Rates used for every conversion: live, with the group's own rates on top (if set for this home currency)
     rates() {
       const merged = { ...this.liveRates }

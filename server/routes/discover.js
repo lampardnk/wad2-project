@@ -4,25 +4,25 @@ import fs from 'fs'
 import path from 'path'
 import { fileURLToPath } from 'url'
 import { requireAuth } from './auth.js'
+import { ask, remembered } from '../outside.js'
 
 const router = express.Router()
-const cache = {} // 'JP-2026' -> { at, list }
+const DAY = 24 * 60 * 60 * 1000
 
 async function holidaysFor(cc, year) {
-  const key = cc + '-' + year
-  if (cache[key] && Date.now() - cache[key].at < 24 * 3600 * 1000) return cache[key].list
-  let list = []
   try {
-    const res = await fetch('https://date.nager.at/api/v3/PublicHolidays/' + year + '/' + cc, { signal: AbortSignal.timeout(8000) })
-    if (res.ok && res.status === 200) {
-      const data = await res.json()
-      for (const h of data) list.push({ date: h.date, name: h.localName && h.localName !== h.name ? h.name + ' (' + h.localName + ')' : h.name })
-    }
+    return await remembered('holidays|' + cc + '-' + year, DAY, async () => {
+      const res = await ask('nager', 'https://date.nager.at/api/v3/PublicHolidays/' + year + '/' + cc, { timeout: 8000 })
+      const list = []
+      if (res.ok && res.status === 200) {
+        const data = await res.json()
+        for (const h of data) list.push({ date: h.date, name: h.localName && h.localName !== h.name ? h.name + ' (' + h.localName + ')' : h.name })
+      }
+      return list
+    })
   } catch (err) {
-    list = null // unknown, try again next time
+    return [] // unknown, try again next time
   }
-  if (list) cache[key] = { at: Date.now(), list }
-  return list || []
 }
 
 // GET /api/discover/holidays?countries=JP,TH&years=2026,2027 -> { JP: [{ date, name }], TH: [...] }
@@ -38,7 +38,7 @@ router.get('/holidays', requireAuth, async (req, res) => {
 })
 
 // ---------- climate for any city (Open-Meteo, free, no key) ----------
-// Saved to a file, so each city is only looked up once ever
+// The cities in this file were looked up ahead of time; any other city is remembered for a year
 const CACHE_FILE = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'data', 'discover-climate.json')
 let climate = {}
 try {
@@ -46,21 +46,8 @@ try {
 } catch (err) {
   climate = {}
 }
-let saveTimer = null
-function saveClimate() {
-  clearTimeout(saveTimer)
-  saveTimer = setTimeout(() => {
-    try {
-      fs.mkdirSync(path.dirname(CACHE_FILE), { recursive: true })
-      fs.writeFileSync(CACHE_FILE, JSON.stringify(climate))
-    } catch (err) {
-      console.warn('Could not save the climate cache:', err.message)
-    }
-  }, 1000)
-}
-
 async function getJson(url) {
-  const res = await fetch(url, { signal: AbortSignal.timeout(15000) })
+  const res = await ask('open-meteo', url, { timeout: 15000 })
   if (!res.ok) throw new Error('HTTP ' + res.status)
   return res.json()
 }
@@ -70,6 +57,9 @@ async function climateFor(label, want) {
   // want = the country code the browser expects, e.g. 'TR' for "Cappadocia, Turkey"
   // A saved answer in the wrong country (an older lookup picked a same-named town) is looked up again
   if (climate[label] && (!want || climate[label].cc === want)) return climate[label]
+  return remembered('climate|' + label + '|' + want, (info) => (info ? 365 * DAY : DAY), () => lookUpClimate(label, want))
+}
+async function lookUpClimate(label, want) {
   const name = label.split(', ')[0]
   const geo = await getJson('https://geocoding-api.open-meteo.com/v1/search?' + new URLSearchParams({ name, count: '10', language: 'en' }))
   const results = geo.results || []
@@ -97,10 +87,7 @@ async function climateFor(label, want) {
   }
   const temp = []
   for (let m = 0; m < 12; m++) temp.push(days[m] ? Math.round(sum[m] / days[m]) : null)
-  const info = { label, lat: place.latitude, lon: place.longitude, cc: place.country_code, temp, rain }
-  climate[label] = info
-  saveClimate()
-  return info
+  return { label, lat: place.latitude, lon: place.longitude, cc: place.country_code, temp, rain }
 }
 
 // GET /api/discover/cities?names=Kyoto, Japan|Rome, Italy&codes=JP|IT  (up to 20 at a time)
@@ -121,12 +108,8 @@ router.get('/cities', requireAuth, async (req, res) => {
 
 // ---------- a short description + photo (Wikipedia) ----------
 // Tries "Queenstown, New Zealand" first, then "Queenstown", skipping "may refer to" (disambiguation) pages
-const about = {}
 async function wikiSummary(title) {
-  const res = await fetch('https://en.wikipedia.org/api/rest_v1/page/summary/' + encodeURIComponent(title.replace(/ /g, '_')), {
-    headers: { 'User-Agent': 'ChuiseYourTrip/1.0 (student project)' },
-    signal: AbortSignal.timeout(10000)
-  })
+  const res = await ask('wikimedia', 'https://en.wikipedia.org/api/rest_v1/page/summary/' + encodeURIComponent(title.replace(/ /g, '_')))
   if (!res.ok) return null
   const data = await res.json()
   if (data.type === 'disambiguation' || !data.extract) return null
@@ -141,21 +124,21 @@ async function wikiSummary(title) {
 // Public: Discover works for guests too
 // Wikipedia summary + photo for a title ("Kyoto, Japan" also tries "Kyoto"). Good answers are cached.
 async function lookupAbout(title) {
-  if (about[title]) return about[title]
+  return (await remembered('about|' + title, 30 * DAY, () => findAbout(title))) || { text: '', photo: null, page: null }
+}
+// Only good answers are remembered (undefined isn't saved), so a hiccup is retried next time
+async function findAbout(title) {
   const tries = [title]
   if (title.includes(', ')) tries.push(title.split(', ')[0])
   for (const t of tries) {
     try {
       const found = await wikiSummary(t)
-      if (found) {
-        about[title] = found // only good answers are kept, so a hiccup is retried next time
-        return found
-      }
+      if (found) return found
     } catch (err) {
       // try the next name
     }
   }
-  return { text: '', photo: null, page: null }
+  return undefined
 }
 
 router.get('/about', async (req, res) => {

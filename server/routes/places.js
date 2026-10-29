@@ -1,7 +1,7 @@
 import express from 'express'
 import { requireAuth } from './auth.js'
 import Attraction from '../models/Attraction.js'
-import { remembered } from '../cache.js'
+import { ask, askOverpass, isResting, remembered, shared } from '../outside.js'
 import fs from 'fs'
 import path from 'path'
 import { fileURLToPath } from 'url'
@@ -17,10 +17,6 @@ try {
 
 const router = express.Router()
 
-// Remember recent searches so typing the same letters again is instant and free
-const cache = new Map()
-const CACHE_LIMIT = 300
-
 // Place types we want to suggest (cities, towns, regions, countries...)
 
 // GET /api/places?q=kyo  -> [{ label: 'Kyoto, Japan', name, country, countryCode: 'JP', type }]
@@ -29,19 +25,20 @@ router.get('/', requireAuth, async (req, res) => {
   const q = (req.query.q || '').trim()
   if (q.length < 2 || q.length > 60) return res.json([])
 
-  const key = q.toLowerCase()
-  if (cache.has(key)) return res.json(cache.get(key))
-
-  let data
+  // Remembered for a week, so typing the same letters again is instant and free
   try {
-    // Photon is busy or refusing us: ask Nominatim instead (the same OpenStreetMap places)
-    data = await photonOrBackup({ q, limit: '15', lang: 'en', osm_tag: 'place' }, async (signal) => {
+    res.json(await remembered('destinations|' + plain(q), 7 * DAY, () => findDestinations(q)))
+  } catch {
+    res.status(502).json({ message: 'Place search is unavailable right now.' })
+  }
+})
+
+async function findDestinations(q) {
+  // Photon is busy or refusing us: ask Nominatim instead (the same OpenStreetMap places)
+  const data = await photonOrBackup({ q, limit: '15', lang: 'en', osm_tag: 'place' }, async (signal) => {
       const list = await nominatim({ q, limit: '10', addressdetails: '1', 'accept-language': 'en' }, signal, { urgent: true })
       return { features: list.map((r) => ({ properties: { name: r.name, country: (r.address || {}).country, countrycode: (r.address || {}).country_code, osm_value: r.addresstype } })) }
     })
-  } catch {
-    return res.status(502).json({ message: 'Place search is unavailable right now.' })
-  }
 
   // Rank what came back so travel destinations win over same-named small towns:
   // a country or big city beats a town, and an exact name match beats a partial one.
@@ -70,11 +67,8 @@ router.get('/', requireAuth, async (req, res) => {
     if (r.score < best - 60 || results.length === 6) break
     results.push({ label: r.label, name: r.name, country: r.country, countryCode: r.countryCode, type: r.type })
   }
-
-  if (cache.size >= CACHE_LIMIT) cache.delete(cache.keys().next().value) // forget the oldest
-  cache.set(key, results)
-  res.json(results)
-})
+  return results
+}
 
 // ---------------------------------------------------------------------
 // GET /api/places/attractions?destination=Kyoto, Japan
@@ -85,72 +79,10 @@ router.get('/', requireAuth, async (req, res) => {
 // 3. "Popular" = places important enough to have a Wikipedia/Wikidata page.
 // Results are saved in MongoDB, so each destination is only looked up once.
 // ---------------------------------------------------------------------
-const HEADERS = { 'User-Agent': 'ChuiseYourTrip/1.0 (SMU IS216 student project)' }
 const TYPES = 'attraction|museum|gallery|viewpoint|zoo|theme_park|aquarium'
 const INDOOR_TYPES = ['museum', 'gallery', 'aquarium']
 const CACHE_DAYS = 30
 const DAY = 24 * 60 * 60 * 1000
-// Two public Overpass servers: if the first is busy or slow, try the second
-// Public Overpass servers: if one is busy, down or rate-limiting us, the next one is tried
-const OVERPASS_SERVERS = ['https://overpass-api.de/api/interpreter', 'https://overpass.private.coffee/api/interpreter', 'https://overpass.kumi.systems/api/interpreter']
-
-export async function askOverpass(query, waitSeconds) {
-  let lastError = null
-  for (const server of OVERPASS_SERVERS) {
-    try {
-      const response = await fetch(server, {
-        method: 'POST',
-        headers: { ...HEADERS, 'Content-Type': 'application/x-www-form-urlencoded' },
-        body: 'data=' + encodeURIComponent(query),
-        signal: AbortSignal.timeout((waitSeconds + 5) * 1000)
-      })
-      const text = await response.text()
-      if (!response.ok) throw new Error('Overpass ' + response.status + ' (' + server + ')')
-      const data = JSON.parse(text) // throws if Overpass sent an HTML error page
-      // When busy, Overpass can answer "OK" with no places and a remark like "Query timed out"
-      if (data.remark && !(data.elements || []).length) throw new Error('Overpass: ' + data.remark)
-      return data
-    } catch (err) {
-      lastError = err
-      console.error('Overpass attempt failed:', err.message)
-    }
-  }
-  throw lastError
-}
-
-// Same as askOverpass, but asks every server at once and takes the first good answer
-// (the others are cancelled). Much faster when one server is busy: no waiting for it to time out first.
-export async function askOverpassFast(query, waitSeconds) {
-  const stop = new AbortController()
-  const tries = OVERPASS_SERVERS.map(async (server) => {
-    // Stops when time runs out, or when another server already answered
-    const own = new AbortController()
-    const timer = setTimeout(() => own.abort(), waitSeconds * 1000)
-    stop.signal.addEventListener('abort', () => own.abort())
-    try {
-      const response = await fetch(server, {
-        method: 'POST',
-        headers: { ...HEADERS, 'Content-Type': 'application/x-www-form-urlencoded' },
-        body: 'data=' + encodeURIComponent(query),
-        signal: own.signal
-      })
-      if (!response.ok) throw new Error('Overpass ' + response.status + ' (' + server + ')')
-      const data = JSON.parse(await response.text())
-      if (data.remark && !(data.elements || []).length) throw new Error('Overpass: ' + data.remark)
-      return data
-    } finally {
-      clearTimeout(timer)
-    }
-  })
-  try {
-    const data = await Promise.any(tries)
-    stop.abort() // cancel the slower servers
-    return data
-  } catch (err) {
-    throw new Error('All Overpass servers failed: ' + (err.errors || []).map((e) => e.message).join('; '))
-  }
-}
-
 // Backup source: Wikipedia articles within 10 km that look like places to visit
 // (titles are checked for words like museum, park, mosque, so streets and schools are left out)
 const WIKI_KINDS = [
@@ -186,7 +118,7 @@ async function wikiNearby(lat, lon, destination) {
     action: 'query', generator: 'geosearch', ggscoord: lat + '|' + lon, ggsradius: '10000', ggslimit: '100',
     prop: 'pageprops', ppprop: 'wikibase_item', format: 'json'
   })
-  const response = await fetch(url, { headers: HEADERS, signal: AbortSignal.timeout(8000) })
+  const response = await ask('wikimedia', url, { timeout: 8000 })
   const data = await response.json()
   const out = []
   for (const g of Object.values((data.query && data.query.pages) || {})) {
@@ -213,7 +145,7 @@ async function addFame(list) {
       const url = 'https://www.wikidata.org/w/api.php?' + new URLSearchParams({
         action: 'wbgetentities', ids: batch.join('|'), props: 'sitelinks', format: 'json'
       })
-      const response = await fetch(url, { headers: HEADERS, signal: AbortSignal.timeout(8000) })
+      const response = await ask('wikimedia', url, { timeout: 8000 })
       if (!response.ok) throw new Error('Wikidata ' + response.status)
       const data = await response.json()
       for (const id in data.entities || {}) {
@@ -247,11 +179,6 @@ function guessType(name) {
   return 'attraction'
 }
 
-// Destinations whose lookup just failed (key -> time). The map services rate-limit us when asked
-// again and again, so after a failure we wait a couple of minutes before asking them again.
-const failedLookups = new Map()
-const RETRY_AFTER_MS = 2 * 60 * 1000
-
 router.get('/attractions', requireAuth, async (req, res) => {
   const destination = (req.query.destination || '').trim()
   if (!destination || destination.length > 80) return res.json([])
@@ -265,14 +192,12 @@ router.get('/attractions', requireAuth, async (req, res) => {
   const maxDays = saved && saved.fallback ? 1 / 24 : CACHE_DAYS
   if (ranked && (Date.now() - saved.fetchedAt.getTime()) / 86400000 < maxDays) return res.json(saved.items)
   // An older list is shown straight away and refreshed in the background, so nobody waits for
-  // the map services (and if the refresh fails, the old list simply stays)
-  const recentFail = Date.now() - (failedLookups.get(key) || 0) < RETRY_AFTER_MS
+  // the map services (and if the refresh fails, the old list simply stays).
+  // While the map services are busy, ask() fails at once, so this sends nothing (see outside.js).
   if (saved && saved.items.length) {
-    if (!recentFail) refreshAttractions(destination, key).catch(() => {})
+    refreshAttractions(destination, key).catch(() => {})
     return res.json(saved.items)
   }
-  // Nothing saved yet. Failed a moment ago: don't ask again yet.
-  if (recentFail) return res.status(502).json({ message: 'Could not load popular places right now. Try again in a few minutes.' })
   try {
     res.json(await refreshAttractions(destination, key))
   } catch {
@@ -281,23 +206,11 @@ router.get('/attractions', requireAuth, async (req, res) => {
 })
 
 // One lookup per destination at a time: everyone opening the same city at once waits for the same answer
-const refreshing = new Map() // key -> promise
 function refreshAttractions(destination, key) {
-  if (!refreshing.has(key)) {
-    const lookup = lookUpAttractions(destination, key)
-      .then((top) => {
-        failedLookups.delete(key)
-        return top
-      })
-      .catch((err) => {
-        console.error('Attractions lookup failed for "' + destination + '":', err.message)
-        failedLookups.set(key, Date.now())
-        throw err
-      })
-      .finally(() => refreshing.delete(key))
-    refreshing.set(key, lookup)
-  }
-  return refreshing.get(key)
+  return shared('attractions|' + key, () => lookUpAttractions(destination, key).catch((err) => {
+    console.error('Attractions lookup failed for "' + destination + '":', err.message)
+    throw err
+  }))
 }
 
 async function lookUpAttractions(destination, key) {
@@ -331,7 +244,7 @@ async function lookUpAttractions(destination, key) {
         sel + '["historic"~"^(castle|monument|memorial|fort|palace|ruins|archaeological_site)$"]["name"]["wikidata"];'
     }
     const query = '[out:json][timeout:' + waitSeconds + '];' + prefix + '(' + parts + ');out tags center 500;'
-    osm = await askOverpassFast(query, waitSeconds + 5)
+    osm = await askOverpass(query, waitSeconds + 5)
   } catch (err) {
     console.error('Overpass step a failed for "' + destination + '":', err.message)
   }
@@ -339,7 +252,7 @@ async function lookUpAttractions(destination, key) {
     try {
       const nearby = '[out:json][timeout:25];(nwr(around:15000,' + lat + ',' + lon + ')' +
         '["tourism"~"^(' + TYPES + ')$"]["name"];);out tags center 300;'
-      osm = await askOverpassFast(nearby, 20)
+      osm = await askOverpass(nearby, 20)
     } catch (err) {
       console.error('Overpass step b failed for "' + destination + '":', err.message)
     }
@@ -432,10 +345,8 @@ async function lookUpAttractions(destination, key) {
 // A photo for each place, trying (in order):
 //   1. the Wikipedia article OpenStreetMap links to   2. the Wikidata entry's main image
 //   3. a Wikipedia search for "name city"              4. a Wikimedia Commons photo search
-// Answers are kept in memory (photos for a day, "no photo" for an hour).
+// Answers are remembered (photos for a day, "no photo" for an hour).
 // ---------------------------------------------------------------------
-const placePhotos = new Map() // 'name|city' -> { url, at }
-
 function plainWords(text) {
   return plain(text).split(/[^a-z0-9]+/).filter((w) => w.length > 2)
 }
@@ -448,7 +359,7 @@ function sameThing(name, title) {
   return false
 }
 async function wikiJson(url) {
-  const res = await fetch(url, { headers: HEADERS, signal: AbortSignal.timeout(8000) })
+  const res = await ask('wikimedia', url, { timeout: 8000 })
   if (!res.ok) throw new Error('HTTP ' + res.status)
   return res.json()
 }
@@ -496,10 +407,11 @@ async function photoFromCommons(name, city) {
   }
   return null
 }
-async function photoForPlace(name, city, item) {
-  const key = plain(name) + '|' + plain(city)
-  const known = placePhotos.get(key)
-  if (known && Date.now() - known.at < (known.url ? 86400000 : 3600000)) return known.url
+function photoForPlace(name, city, item) {
+  const key = 'place-photo|' + plain(name) + '|' + plain(city)
+  return remembered(key, (url) => (url ? DAY : DAY / 24), () => findPlacePhoto(name, city, item))
+}
+async function findPlacePhoto(name, city, item) {
   const steps = []
   if (item && item.wiki) steps.push(() => photoFromArticle(item.wiki))
   if (item && item.wikidata) steps.push(() => photoFromWikidata(item.wikidata))
@@ -514,7 +426,6 @@ async function photoForPlace(name, city, item) {
     }
     if (url) break
   }
-  placePhotos.set(key, { url, at: Date.now() })
   return url
 }
 
@@ -578,79 +489,32 @@ function prettyKind(value) {
   return text.charAt(0).toUpperCase() + text.slice(1)
 }
 
-// Ask a free map service for JSON. Fails clearly on a busy/blocked answer (HTML or 429), and tries once more.
-async function getMapJson(url) {
-  let lastError = null
-  for (let attempt = 0; attempt < 2; attempt++) {
-    try {
-      const response = await fetch(url, { headers: HEADERS, signal: AbortSignal.timeout(8000) })
-      if (!response.ok) throw new Error('HTTP ' + response.status)
-      return await response.json()
-    } catch (err) {
-      lastError = err
-    }
-  }
-  throw lastError
-}
-
-// Nominatim allows one request a second (its usage policy), so our calls queue up 1.1 s apart.
-// Someone typing a search (urgent) goes ahead of background lookups like map pins.
-// A call whose signal was aborted while it waited is skipped.
-const nominatimQueue = { urgent: [], later: [] }
-let nominatimBusy = false
-let nominatimLast = 0
-export function nominatim(params, signal, { urgent = false } = {}) {
-  return new Promise((resolve, reject) => {
-    nominatimQueue[urgent ? 'urgent' : 'later'].push({ params, signal, resolve, reject })
-    nominatimNext()
-  })
-}
-async function nominatimNext() {
-  if (nominatimBusy) return
-  nominatimBusy = true
-  while (nominatimQueue.urgent.length || nominatimQueue.later.length) {
-    const gap = nominatimLast + 1100 - Date.now()
-    if (gap > 0) await new Promise((resolve) => setTimeout(resolve, gap))
-    const job = nominatimQueue.urgent.shift() || nominatimQueue.later.shift() // picked after the wait, so a search typed meanwhile goes first
-    if (job.signal && job.signal.aborted) {
-      job.reject(new Error('Nominatim not needed any more'))
-      continue
-    }
-    try {
-      job.resolve(await getMapJson('https://nominatim.openstreetmap.org/search?' + new URLSearchParams({ format: 'jsonv2', ...job.params })))
-    } catch (err) {
-      job.reject(err)
-    }
-    nominatimLast = Date.now()
-  }
-  nominatimBusy = false
+// Nominatim (OpenStreetMap's own search). Its 1-a-second limit and the queue are in outside.js;
+// someone typing a search (urgent) goes ahead of background lookups like map pins.
+export async function nominatim(params, signal, { urgent = false } = {}) {
+  const url = 'https://nominatim.openstreetmap.org/search?' + new URLSearchParams({ format: 'jsonv2', ...params })
+  const response = await ask('nominatim', url, { signal, urgent, timeout: 8000 })
+  if (!response.ok) throw new Error('Nominatim ' + response.status)
+  return response.json()
 }
 
 // Photon first, with a delayed backup: if Photon hasn't answered within 2 s (or fails), also ask
 // the backup (Nominatim) and use whichever answers first. Healthy Photon never touches Nominatim.
-// After Photon fails, skip it for 5 minutes so every search doesn't wait for it again.
+// After Photon fails it rests (outside.js), so every search doesn't wait for it again.
 const BACKUP_AFTER_MS = 2000
-const PHOTON_REST_MS = 5 * 60 * 1000
-let photonDownUntil = 0
 export async function photonOrBackup(params, backup) {
-  if (Date.now() < photonDownUntil) return backup()
+  if (isResting('photon')) return backup()
   const done = new AbortController() // cancels whichever source is still busy when the other answers
   let startBackup
   const backupGo = new Promise((resolve) => { startBackup = resolve })
   const timer = setTimeout(startBackup, BACKUP_AFTER_MS)
   const fromPhoton = (async () => {
     try {
-      const response = await fetch('https://photon.komoot.io/api/?' + new URLSearchParams(params), {
-        headers: HEADERS,
-        signal: AbortSignal.any([done.signal, AbortSignal.timeout(8000)])
-      })
+      const response = await ask('photon', 'https://photon.komoot.io/api/?' + new URLSearchParams(params), { signal: done.signal, timeout: 8000 })
       if (!response.ok) throw new Error('Photon ' + response.status)
       return await response.json()
     } catch (err) {
-      if (!done.signal.aborted) {
-        photonDownUntil = Date.now() + PHOTON_REST_MS
-        console.warn('Photon failed:', err.message, '(using Nominatim for 5 minutes)')
-      }
+      if (!done.signal.aborted) console.warn('Photon failed:', err.message, '(using Nominatim)')
       startBackup()
       throw err
     }
@@ -831,11 +695,9 @@ async function searchPlaces(q, near) {
 // Tries the city's article, then "Tourism in <country>", then the country.
 // Flags and maps (usually .svg) are skipped so we get a real photo.
 // ---------------------------------------------------------------------
-const photos = new Map() // destination -> result
-
 async function wikiPhoto(title, width) {
   const url = 'https://en.wikipedia.org/api/rest_v1/page/summary/' + encodeURIComponent(title.replace(/ /g, '_'))
-  const response = await fetch(url, { headers: HEADERS, signal: AbortSignal.timeout(6000) })
+  const response = await ask('wikimedia', url, { timeout: 6000 })
   if (!response.ok) return null
   const data = await response.json()
   if (data.type === 'disambiguation') return null
@@ -858,7 +720,7 @@ async function wikiGalleryPhoto(title, width) {
     action: 'query', generator: 'images', titles: title, gimlimit: '40', redirects: '1',
     prop: 'imageinfo', iiprop: 'url|size|mime', iiurlwidth: String(width), format: 'json'
   })
-  const response = await fetch(url, { headers: HEADERS, signal: AbortSignal.timeout(8000) })
+  const response = await ask('wikimedia', url, { timeout: 8000 })
   if (!response.ok) return null
   const data = await response.json()
   const pages = (data.query && data.query.pages) || {}
@@ -878,9 +740,11 @@ router.get('/photo', requireAuth, async (req, res) => {
   const destination = (req.query.destination || '').trim()
   if (!destination || destination.length > 80) return res.json({ url: null })
   const width = req.query.size === 'small' ? 960 : 1920
-  const key = width + '|' + destination.toLowerCase()
-  if (photos.has(key)) return res.json(photos.get(key))
+  const key = 'destination-photo|' + width + '|' + destination.toLowerCase()
+  res.json((await remembered(key, 30 * DAY, () => findDestinationPhoto(destination, width))) || { url: null })
+})
 
+async function findDestinationPhoto(destination, width) {
   const parts = destination.split(',').map((x) => x.trim()).filter(Boolean)
   const place = parts[0]
   const country = parts.length > 1 ? parts[parts.length - 1] : parts[0]
@@ -913,12 +777,8 @@ router.get('/photo', requireAuth, async (req, res) => {
       }
     }
   }
-  // Only remember found photos, so a miss (or a network hiccup) is tried again next time
-  if (result.url) {
-    if (photos.size >= CACHE_LIMIT) photos.delete(photos.keys().next().value)
-    photos.set(key, result)
-  }
-  res.json(result)
-})
+  // Only found photos are remembered (undefined isn't saved), so a miss or a hiccup is tried again next time
+  return result.url ? result : undefined
+}
 
 export default router

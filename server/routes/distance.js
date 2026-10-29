@@ -1,6 +1,6 @@
 import express from 'express'
 import { requireAuth } from './auth.js'
-import { remembered } from '../cache.js'
+import { ask, remembered } from '../outside.js'
 
 const router = express.Router()
 
@@ -23,7 +23,7 @@ router.get('/', requireAuth, async (req, res) => {
   let seconds
   try {
     seconds = await remembered(key, (found) => (found === null ? DAY : 7 * DAY), async () => {
-      const response = await fetch('https://routes.googleapis.com/distanceMatrix/v2:computeRouteMatrix', {
+      const response = await ask('google-routes', 'https://routes.googleapis.com/distanceMatrix/v2:computeRouteMatrix', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -34,8 +34,7 @@ router.get('/', requireAuth, async (req, res) => {
           origins: [{ waypoint: { address: origin } }],
           destinations: [{ waypoint: { address: destination } }],
           travelMode
-        }),
-        signal: AbortSignal.timeout(10000)
+        })
       })
 
       if (!response.ok) {

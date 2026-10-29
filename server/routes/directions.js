@@ -2,7 +2,7 @@ import express from 'express';
 import SavedRoute from '../models/transport.js';
 import { requireAuth } from './auth.js';
 import { findTripFor } from '../tripAccess.js';
-import { remembered } from '../cache.js';
+import { ask, remembered } from '../outside.js';
 const router = express.Router();
 
 // different transport modes
@@ -70,7 +70,7 @@ async function fetchMode(origin, destination, { mode, allowedModes, fallbackType
 
     try {
         // send the request and wait for google’s reply
-        const res = await fetch(endpoint, {
+        const res = await ask('google-routes', endpoint, {
             method: 'POST',
             headers: {
                 'Content-Type': 'application/json',  // JSON file

@@ -1,6 +1,6 @@
 import express from 'express'
 import { requireAuth } from './auth.js'
-import { remembered } from '../cache.js'
+import { ask, remembered } from '../outside.js'
 
 const router = express.Router()
 
@@ -23,7 +23,7 @@ router.get('/', requireAuth, async (req, res) => {
       let lastError = null
       for (const source of SOURCES) {
         try {
-          const response = await fetch(source(base), { signal: AbortSignal.timeout(6000) })
+          const response = await ask('frankfurter', source(base), { timeout: 6000 })
           if (!response.ok) throw new Error('status ' + response.status)
           const json = await response.json()
           return { base, date: json.date, rates: { ...json.rates, [base]: 1 } }

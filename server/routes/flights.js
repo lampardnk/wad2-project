@@ -1,10 +1,10 @@
 import express from 'express'
 import { requireAuth } from './auth.js'
+import { ask, remembered } from '../outside.js'
 
 const router = express.Router()
 
 // The free plan only allows about 100 requests a month, so remember answers for 15 minutes
-const cache = {}
 const CACHE_MINUTES = 15
 
 // GET /api/flights?flight=KE621
@@ -17,21 +17,28 @@ router.get('/', requireAuth, async (req, res) => {
     return res.status(503).json({ message: 'Flights are not set up yet (AVIATIONSTACK_API_KEY missing in server/.env).' })
   }
 
-  const saved = cache[flight]
-  if (saved && Date.now() - saved.time < CACHE_MINUTES * 60 * 1000) {
-    return res.json(saved.data)
+  // null = no live data for that flight (also remembered, to save the monthly allowance)
+  let data
+  try {
+    data = await remembered('flight|' + flight, CACHE_MINUTES * 60 * 1000, () => lookUpFlight(flight))
+  } catch (err) {
+    return res.status(502).json({ message: 'Flight service error. Try again later.' })
   }
+  if (!data) return res.status(404).json({ message: 'No live data for that flight right now.' })
+  res.json(data)
+})
 
+async function lookUpFlight(flight) {
   const params = new URLSearchParams({ access_key: process.env.AVIATIONSTACK_API_KEY, flight_iata: flight })
-  const response = await fetch('http://api.aviationstack.com/v1/flights?' + params, { signal: AbortSignal.timeout(10000) })
+  const response = await ask('aviationstack', 'http://api.aviationstack.com/v1/flights?' + params)
   const body = await response.json()
 
   if (body.error) {
     console.error('Aviationstack error:', body.error.message)
-    return res.status(502).json({ message: 'Flight service error. Try again later.' })
+    throw new Error('Aviationstack: ' + body.error.message)
   }
   const f = body.data && body.data[0]
-  if (!f) return res.status(404).json({ message: 'No live data for that flight right now.' })
+  if (!f) return null
 
   // Delay = how much later than scheduled the flight arrives (or arrived).
   // Comparing the times is more reliable than the API's "delay" field.
@@ -44,15 +51,13 @@ router.get('/', requireAuth, async (req, res) => {
     delayMinutes = arr.delay || 0
   }
 
-  const data = {
+  return {
     flight,
     status: f.flight_status,
     delayMinutes: Math.max(0, delayMinutes), // early arrivals count as 0, not negative
     originalArrival: arr.scheduled,
     newArrival: arrivedAt
   }
-  cache[flight] = { time: Date.now(), data }
-  res.json(data)
-})
+}
 
 export default router

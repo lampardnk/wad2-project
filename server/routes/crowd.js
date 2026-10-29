@@ -1,7 +1,8 @@
 import express from 'express'
 import Forecast from '../models/Forecast.js'
 import { requireAuth } from './auth.js'
-import { askOverpassFast, nominatim } from './places.js'
+import { ask, askOverpass } from '../outside.js'
+import { nominatim } from './places.js'
 
 const router = express.Router()
 const CACHE_DAYS = 30 // BestTime forecasts stay accurate for several weeks
@@ -82,7 +83,7 @@ async function findNearby(name, address, lat, lon) {
     const query = '[out:json][timeout:10];(' +
       'nwr(around:1000,' + lat + ',' + lon + ')["tourism"~"attraction|viewpoint|museum|zoo|theme_park"]["name"];' +
       ');out tags 30;'
-    const osm = await askOverpassFast(query, 12) // every Overpass server at once, first answer wins
+    const osm = await askOverpass(query, 12)
 
     // 3. Keep up to 3 names, preferring English names, skipping the place itself
     const names = []
@@ -221,10 +222,7 @@ router.get('/', requireAuth, async (req, res) => {
 
   let data
   try {
-    const response = await fetch('https://besttime.app/api/v1/forecasts?' + params, {
-      method: 'POST',
-      signal: AbortSignal.timeout(20000)
-    })
+    const response = await ask('besttime', 'https://besttime.app/api/v1/forecasts?' + params, { method: 'POST', timeout: 20000 })
     data = await response.json()
   } catch (err) {
     return res.status(502).json({ message: 'Could not reach the crowd data service. Try again later.' })

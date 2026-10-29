@@ -1,22 +1,14 @@
 import express from 'express'
 import { requireAuth } from './auth.js'
-import { askOverpassFast, nominatim, photonOrBackup } from './places.js'
-import PlaceLookup from '../models/PlaceLookup.js'
+import { nominatim, photonOrBackup } from './places.js'
+import { askOverpass, remembered } from '../outside.js'
 
 // Safety tab helpers. These run on our server (not in the browser) so that:
-//  - busy OpenStreetMap servers are retried and results are cached (no more 504s in the browser)
+//  - busy OpenStreetMap servers are retried and results are remembered (no more 504s in the browser)
 //  - the same answer is reused by everyone on the trip
 const router = express.Router()
-const DAY = 24 * 60 * 60 * 1000
-
-const nearbyCache = new Map() // 'lat,lon,home' -> { time, data }
-const placeCache = new Map()  // 'kyoto, japan' -> place
-const LIMIT = 300
-
-function remember(map, key, value) {
-  if (map.size >= LIMIT) map.delete(map.keys().next().value)
-  map.set(key, value)
-}
+const MINUTE = 60 * 1000
+const DAY = 24 * 60 * MINUTE
 
 // Photon (OpenStreetMap search). lang 'default' gives local names, e.g. Japanese.
 async function photon(params) {
@@ -78,50 +70,12 @@ function kmBetween(a, b) {
   return Math.sqrt(x * x + y * y) * 6371
 }
 
-// A place's coordinates: memory, then MongoDB, then the map services. Null = not found.
-// "Not found" is remembered for a day and "the map services failed" for 5 minutes, so a trip page
-// that asks for every stop again doesn't send the same questions over and over. When the same place
-// is asked for twice at once (two people opening the trip), the second waits for the first answer.
-const FOUND_DAYS = 30
-const MISS_MS = DAY
-const FAIL_MS = 5 * 60 * 1000
-const misses = new Map() // key -> { until, failed }
-const inFlight = new Map() // key -> the lookup's promise
-async function locate(place, near) {
-  const key = (place + '|' + near).toLowerCase()
-  if (placeCache.has(key)) return placeCache.get(key)
-  const miss = misses.get(key)
-  if (miss && Date.now() < miss.until) {
-    if (miss.failed) throw new Error('Place lookup failed a moment ago')
-    return null
-  }
-  if (!inFlight.has(key)) inFlight.set(key, lookUp(place, near, key).finally(() => inFlight.delete(key)))
-  return inFlight.get(key)
-}
-async function lookUp(place, near, key) {
-  const saved = await PlaceLookup.findOne({ key })
-  if (saved) {
-    const age = Date.now() - saved.fetchedAt.getTime()
-    if (saved.place && age < FOUND_DAYS * DAY) {
-      remember(placeCache, key, saved.place)
-      return saved.place
-    }
-    if (!saved.place && age < MISS_MS) {
-      remember(misses, key, { until: saved.fetchedAt.getTime() + MISS_MS })
-      return null
-    }
-  }
-  let found
-  try {
-    found = await findPlace(place, near)
-  } catch (err) {
-    remember(misses, key, { until: Date.now() + FAIL_MS, failed: true })
-    throw err
-  }
-  if (found) remember(placeCache, key, found)
-  else remember(misses, key, { until: Date.now() + MISS_MS })
-  await PlaceLookup.updateOne({ key }, { place: found, fetchedAt: new Date() }, { upsert: true })
-  return found
+// A place's coordinates (null = not found). Found places are remembered for 30 days and "not found"
+// for a day, so a trip page that asks for every stop again doesn't send the same questions over and over.
+// Two people asking for the same place at once share one lookup (see remembered in outside.js).
+function locate(place, near) {
+  const key = 'locate|' + (place + '|' + near).toLowerCase()
+  return remembered(key, (found) => (found ? 30 * DAY : DAY), () => findPlace(place, near))
 }
 
 // Ask the map services where a place is (see locate for the caching)
@@ -286,10 +240,17 @@ router.get('/nearby', requireAuth, async (req, res) => {
   if (!Number.isFinite(lat) || !Number.isFinite(lon) || Math.abs(lat) > 90 || Math.abs(lon) > 180) {
     return res.status(400).json({ message: 'Invalid location.' })
   }
-  const key = lat + ',' + lon + ',' + home
-  const saved = nearbyCache.get(key)
-  if (saved && Date.now() < saved.until) return res.json(saved.data)
+  // A full answer is kept for a day; a partial one (backup source / no embassy) only for 10 minutes.
+  // If every source fails, an older answer is used (remembered in outside.js).
+  try {
+    res.json(await remembered('safety-nearby|' + lat + ',' + lon + ',' + home, (d) => (d.partial ? 10 * MINUTE : DAY), () => findNearby(lat, lon, home)))
+  } catch (err) {
+    console.error('Safety nearby failed:', err.message)
+    res.status(502).json({ message: 'Nearby services are unavailable right now.' })
+  }
+})
 
+async function findNearby(lat, lon, home) {
   const at = lat + ',' + lon
   const coreQuery = '[out:json][timeout:10];(' +
     'nwr["amenity"~"^(hospital|clinic|police|fire_station)$"](around:3000,' + at + ');' +
@@ -302,7 +263,7 @@ router.get('/nearby', requireAuth, async (req, res) => {
     ');out tags center 5;'
 
   // All at the same time
-  const [core, embassy] = await Promise.allSettled([askOverpassFast(coreQuery, 12), askOverpassFast(embassyQuery, 14)])
+  const [core, embassy] = await Promise.allSettled([askOverpass(coreQuery, 12), askOverpass(embassyQuery, 14)])
 
   let places = []
   let complete = true
@@ -311,21 +272,12 @@ router.get('/nearby', requireAuth, async (req, res) => {
   } else {
     console.error('Safety nearby (Overpass) failed:', core.reason.message)
     complete = false
-    try {
-      places = await photonNearby(lat, lon)
-    } catch (err) {
-      console.error('Safety nearby (Photon backup) failed:', err.message)
-      if (saved) return res.json(saved.data) // an older answer is better than none
-      return res.status(502).json({ message: 'Nearby services are unavailable right now.' })
-    }
+    places = await photonNearby(lat, lon)
   }
   if (embassy.status === 'fulfilled') places = places.concat(toPlaces(embassy.value.elements))
   else complete = false
 
-  const data = { lat, lon, places, partial: !complete }
-  // A full answer is kept for a day; a partial one (backup source / no embassy) only for 10 minutes
-  remember(nearbyCache, key, { until: Date.now() + (complete ? DAY : 10 * 60 * 1000), data })
-  res.json(data)
-})
+  return { lat, lon, places, partial: !complete }
+}
 
 export default router

@@ -1,6 +1,6 @@
 import express from 'express'
 import { requireAuth } from './auth.js'
-import { remembered } from '../cache.js'
+import { ask, remembered } from '../outside.js'
 
 const router = express.Router()
 
@@ -24,7 +24,7 @@ router.get('/', requireAuth, async (req, res) => {
       const q = String(req.query.q).slice(0, 100)
       const place = await remembered('weather-place|' + q.toLowerCase(), (p) => (p ? 365 * DAY : DAY), async () => {
         const geoParams = new URLSearchParams({ q, limit: '1', appid: key })
-        const geoRes = await fetch('https://api.openweathermap.org/geo/1.0/direct?' + geoParams, { signal: AbortSignal.timeout(10000) })
+        const geoRes = await ask('openweather', 'https://api.openweathermap.org/geo/1.0/direct?' + geoParams)
         if (!geoRes.ok) {
           console.error('OpenWeather geocode failed:', geoRes.status, await geoRes.text())
           throw new Error('OpenWeather geocode ' + geoRes.status)
@@ -46,7 +46,7 @@ router.get('/', requireAuth, async (req, res) => {
     const result = await remembered('weather|' + cacheKey, 15 * MINUTE, async () => {
       console.log('Calling OpenWeather for', cacheKey)
       const params = new URLSearchParams({ lat, lon, units: 'metric', appid: key })
-      const response = await fetch('https://api.openweathermap.org/data/2.5/forecast?' + params, { signal: AbortSignal.timeout(10000) })
+      const response = await ask('openweather', 'https://api.openweathermap.org/data/2.5/forecast?' + params)
       if (!response.ok) {
         console.error('OpenWeather forecast failed:', response.status, await response.text())
         throw new Error('OpenWeather forecast ' + response.status)

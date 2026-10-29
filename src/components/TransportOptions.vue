@@ -21,6 +21,7 @@
     const selectedDay = ref('');
     const timeType = ref('depart');   // 'depart' or 'arrive'
     const timeZone = ref('Asia/Seoul');   // default
+    const loadError = ref('');   // why the last lookup failed (shown instead of "no options")
 
     // get the places from itinerary 
     const places = computed(() => {
@@ -130,11 +131,14 @@
                 queryParams.set('timeType', timeType.value);
             }
 
+            loadError.value = '';
             const res = await axios.get(`/api/directions?${queryParams}`);
             options.value = res.data;
         } catch(error) {
             console.error('Could not load directions', error);
             options.value = [];
+            // e.g. "Too many lookups..." (429): say so, instead of "Google has no travel options"
+            loadError.value = error.response?.data?.message || 'Could not load travel options right now.';
         } finally {
             loading.value = false;
         }
@@ -364,7 +368,11 @@
         </div>
         <!-- Empty State -->
         <div v-else-if="!options.length" class="text-center text-muted py-3">
-            <template v-if="endPoint">
+            <template v-if="endPoint && loadError">
+                {{ loadError }}
+                <a :href="mapsUrl(null)" target="_blank" rel="noopener">Open it in Google Maps ↗</a>
+            </template>
+            <template v-else-if="endPoint">
                 Google has no travel options for this route here (it has no train data for Japan, for example).
                 <a :href="mapsUrl(null)" target="_blank" rel="noopener">Open it in Google Maps ↗</a>
             </template>

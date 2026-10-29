@@ -655,7 +655,7 @@ async function createTrip() {
     }
     if (wishlist.length) {
       try {
-        await axios.put('/api/trips/' + id + '/itinerary', { stops: [], wishlist, version: 0 })
+        await axios.post('/api/trips/' + id + '/wishlist', { places: wishlist })
       } catch (err) {
         // the trip exists; the wishlist can still be filled in on the next page
         notify('Your trip is ready, but its top sights could not be added. You can save places on the next step.')

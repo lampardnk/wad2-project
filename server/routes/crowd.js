@@ -1,7 +1,7 @@
 import express from 'express'
 import Forecast from '../models/Forecast.js'
 import { requireAuth } from './auth.js'
-import { nominatim } from './places.js'
+import { askOverpassFast, nominatim } from './places.js'
 
 const router = express.Router()
 const CACHE_DAYS = 30 // BestTime forecasts stay accurate for several weeks
@@ -67,7 +67,6 @@ function typicalDays(category) {
 
 // ---------- Find nearby landmarks (free OpenStreetMap services, no key) ----------
 // Used when BestTime has no data, e.g. Namsan Park -> N Seoul Tower.
-const OSM_HEADERS = { 'User-Agent': 'ChuiseYourTrip/1.0 (SMU IS216 student project)' }
 
 async function findNearby(name, address, lat, lon) {
   try {
@@ -83,13 +82,7 @@ async function findNearby(name, address, lat, lon) {
     const query = '[out:json][timeout:10];(' +
       'nwr(around:1000,' + lat + ',' + lon + ')["tourism"~"attraction|viewpoint|museum|zoo|theme_park"]["name"];' +
       ');out tags 30;'
-    const resp = await fetch('https://overpass-api.de/api/interpreter', {
-      method: 'POST',
-      headers: { ...OSM_HEADERS, 'Content-Type': 'application/x-www-form-urlencoded' },
-      body: 'data=' + encodeURIComponent(query),
-      signal: AbortSignal.timeout(12000)
-    })
-    const osm = await resp.json()
+    const osm = await askOverpassFast(query, 12) // every Overpass server at once, first answer wins
 
     // 3. Keep up to 3 names, preferring English names, skipping the place itself
     const names = []

@@ -77,6 +77,7 @@ function toClient(t, userId, contacts) {
     isOwner: userId ? String(t.owner) === String(userId) : false,
     group: t.group || null,                    // family group it's shared with (or null)
     version: t.version || 0,                   // itinerary version (see PUT /:id/itinerary)
+    changedAt: t.updatedAt || null,            // when anything on the trip last changed (see GET /:id/changed)
     me: userId ? memberName(t, userId) : null, // my traveller name on this trip
     members: (t.members || []).map((m) => {
       const c = contacts ? contacts[String(m.user)] : null
@@ -252,6 +253,17 @@ router.post('/', requireAuth, async (req, res) => {
   res.status(201).json(toClient(trip, req.userId))
 })
 
+// GET /api/trips/:id/changed -> { changedAt }: the open trip page asks this every few seconds and only
+// loads the whole trip when it changed. (MongoDB sets updatedAt on every save, see the trip model.)
+router.get('/:id/changed', requireAuth, async (req, res) => {
+  if (!mongoose.isValidObjectId(req.params.id)) return res.status(404).json({ message: 'Trip not found.' })
+  // The owner and members in one small read; family-group trips go through the full check
+  let t = await Trip.findOne({ _id: req.params.id, $or: [{ owner: req.userId }, { 'members.user': req.userId }] }).select('updatedAt').lean()
+  if (!t) t = await findTripFor(req.userId, req.params.id)
+  if (!t) return res.status(404).json({ message: 'Trip not found.' })
+  res.json({ changedAt: t.updatedAt || null })
+})
+
 // GET /api/trips/:id
 router.get('/:id', requireAuth, async (req, res) => {
   const trip = await findTripFor(req.userId, req.params.id)
@@ -282,20 +294,66 @@ router.post('/:id/votes', requireAuth, async (req, res) => {
   res.json({ votes })
 })
 
-// PUT /api/trips/:id/itinerary  { stops: [...], wishlist: [...], version?, base?: { stops, wishlist } }
+// Wishlist places are saved one at a time, straight into the trip (like votes), so two people
+// adding, editing or removing places at the same moment never overwrite each other.
+// POST /api/trips/:id/wishlist  { id, name, address, ... } or { places: [...] }  -> add places
+// (a place whose id is already saved is skipped, so sending the same add twice is harmless)
+const WISH_LIMIT = 100
+router.post('/:id/wishlist', requireAuth, async (req, res) => {
+  const trip = await findTripFor(req.userId, req.params.id)
+  if (!trip) return res.status(404).json({ message: 'Trip not found.' })
+  const sent = Array.isArray(req.body.places) ? req.body.places : [req.body]
+  const places = cleanWishlist(sent.map((p) => ({ ...p, votes: [] }))) // votes are added with POST /votes
+  if (!places || !places.length) return res.status(400).json({ message: 'Some place details are invalid.' })
+  const ids = places.map((p) => p.id)
+  const saved = (trip.wishlist || []).map((w) => w.id)
+  const added = places.filter((p) => !saved.includes(p.id))
+  if (saved.length + added.length > WISH_LIMIT) return res.status(400).json({ message: 'The wishlist is full (' + WISH_LIMIT + ' places).' })
+  // Only if none of these ids got saved in the meantime (a double-click, or a retry)
+  if (added.length) await Trip.updateOne({ _id: trip._id, 'wishlist.id': { $nin: ids } }, { $push: { wishlist: { $each: added } } })
+  const fresh = await Trip.findById(trip._id).select('wishlist')
+  res.json({ wishlist: fresh.wishlist })
+})
+
+// PATCH /api/trips/:id/wishlist/:wishId  { name?, address?, link?, ... }  -> edit one place
+const WISH_FIELDS = ['name', 'address', 'outdoor', 'type', 'city', 'duration', 'bookedVia', 'link']
+router.patch('/:id/wishlist/:wishId', requireAuth, async (req, res) => {
+  const trip = await findTripFor(req.userId, req.params.id)
+  if (!trip) return res.status(404).json({ message: 'Trip not found.' })
+  const now = (trip.wishlist || []).find((w) => w.id === req.params.wishId)
+  if (!now) return res.status(404).json({ message: 'That place is no longer in the wishlist.' })
+  const changed = {}
+  for (const k of WISH_FIELDS) if (k in req.body) changed[k] = req.body[k]
+  const clean = (cleanWishlist([{ ...now, ...changed }]) || [])[0]
+  if (!clean) return res.status(400).json({ message: 'Some place details are invalid.' })
+  const set = {}
+  for (const k of Object.keys(changed)) set['wishlist.$[w].' + k] = clean[k]
+  await Trip.updateOne({ _id: trip._id }, { $set: set }, { arrayFilters: [{ 'w.id': now.id }] })
+  const fresh = await Trip.findById(trip._id).select('wishlist')
+  res.json({ wishlist: fresh.wishlist })
+})
+
+// DELETE /api/trips/:id/wishlist/:wishId  -> remove one place (already gone = fine)
+router.delete('/:id/wishlist/:wishId', requireAuth, async (req, res) => {
+  const trip = await findTripFor(req.userId, req.params.id)
+  if (!trip) return res.status(404).json({ message: 'Trip not found.' })
+  await Trip.updateOne({ _id: trip._id }, { $pull: { wishlist: { id: req.params.wishId } } })
+  const fresh = await Trip.findById(trip._id).select('wishlist')
+  res.json({ wishlist: fresh.wishlist })
+})
+
+// PUT /api/trips/:id/itinerary  { stops: [...], version?, base?: { stops } }
+// Saves the days only (the wishlist has its own requests above).
 // "version" is the version the browser last saw. If someone else saved in between:
-//  - with "base" (the stops + wishlist as this browser last loaded them), the two saves are merged:
-//    saved places added/edited/removed by each person all stay, and the days keep whoever changed them.
-//    Only when BOTH people changed the days do we answer 409 with the latest trip.
+//  - with "base" (the stops as this browser last loaded them): if only one of us changed the days,
+//    that change is kept. When BOTH people changed the days we answer 409 with the latest trip.
 //  - without "base" (older pages) it's 409 straight away.
 // Without a version at all it just saves.
-const WISH_FIELDS = ['name', 'address', 'outdoor', 'type', 'city', 'duration', 'bookedVia', 'link']
 router.put('/:id/itinerary', requireAuth, async (req, res) => {
   const stops = cleanStops(req.body.stops)
-  const wishlist = cleanWishlist(req.body.wishlist)
-  if (!stops || !wishlist) return res.status(400).json({ message: 'Some itinerary details are invalid.' })
-  const base = req.body.base ? { stops: cleanStops(req.body.base.stops), wishlist: cleanWishlist(req.body.base.wishlist) } : null
-  if (base && (!base.stops || !base.wishlist)) return res.status(400).json({ message: 'Some itinerary details are invalid.' })
+  if (!stops) return res.status(400).json({ message: 'Some itinerary details are invalid.' })
+  const base = req.body.base ? { stops: cleanStops(req.body.base.stops) } : null
+  if (base && !base.stops) return res.status(400).json({ message: 'Some itinerary details are invalid.' })
 
   let sent = null
   if (req.body.version !== undefined && req.body.version !== null) {
@@ -306,15 +364,6 @@ router.put('/:id/itinerary', requireAuth, async (req, res) => {
   let latest = await findTripFor(req.userId, req.params.id)
   if (!latest) return res.status(404).json({ message: 'Trip not found.' })
 
-  // Votes: you can only change your own (the organiser also for people without an account).
-  // Everyone else's votes are kept exactly as they are saved.
-  const me = memberName(latest, req.userId)
-  const allowed = [me]
-  if (roleOf(latest, req.userId) === 'owner') {
-    for (const t of latest.travellers) {
-      if (!latest.members.some((m) => m.name === t)) allowed.push(t)
-    }
-  }
   const conflict = async () => {
     const fresh = await Trip.findById(latest._id)
     return res.status(409).json({ message: 'Someone else changed this trip. Showing their latest version.', trip: toClient(fresh, req.userId) })
@@ -324,28 +373,19 @@ router.put('/:id/itinerary', requireAuth, async (req, res) => {
   for (let attempt = 0; attempt < 4; attempt++) {
     const current = latest.version || 0
     let saveStops = stops
-    let saveWish = wishlist
     let merged = false
     if (sent !== null && sent !== current) {
       if (!base) return conflict()
       if (sameStops(stops, base.stops)) saveStops = latest.stops // I didn't touch the days: keep theirs
       else if (!sameStops(latest.stops, base.stops)) return conflict() // we both changed the days
-      saveWish = mergeById(latest.wishlist || [], base.wishlist, wishlist, WISH_FIELDS)
       merged = true
     }
-    saveWish = saveWish.map((w) => {
-      const before = (latest.wishlist || []).find((x) => x.id === w.id)
-      const beforeVotes = before && Array.isArray(before.votes) ? before.votes : []
-      const sentItem = wishlist.find((x) => x.id === w.id)
-      const mine = (sentItem ? sentItem.votes : beforeVotes).filter((v) => allowed.includes(v))
-      return { ...w, votes: beforeVotes.filter((v) => !allowed.includes(v)).concat(mine) }
-    })
 
     // A saved place only goes on a day once the group voted for it (the planner checks this too)
     const before = (latest.stops || []).map((st) => st.id)
     for (const st of saveStops) {
       if (before.includes(st.id)) continue
-      const wish = saveWish.find((w) => w.name.toLowerCase() === st.name.toLowerCase())
+      const wish = (latest.wishlist || []).find((w) => w.name.toLowerCase() === st.name.toLowerCase())
       if (wish && !isGroupPick(wish, latest.travellers)) {
         return res.status(400).json({ message: st.name + ' needs more than half the group to vote for it first.' })
       }
@@ -354,7 +394,7 @@ router.put('/:id/itinerary', requireAuth, async (req, res) => {
     // One atomic step: save only if the version is still the one we merged with, and add 1 to it
     const filter = { _id: latest._id }
     if (sent !== null) filter.version = current === 0 ? { $in: [0, null] } : current // trips from before versions have none
-    const updated = await Trip.findOneAndUpdate(filter, { $set: { stops: saveStops, wishlist: saveWish }, $inc: { version: 1 } }, { new: true })
+    const updated = await Trip.findOneAndUpdate(filter, { $set: { stops: saveStops }, $inc: { version: 1 } }, { new: true })
     if (updated) {
       // Notes on stops that were just removed go too
       const stopIds = saveStops.map((st) => st.id)

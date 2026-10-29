@@ -33,7 +33,7 @@ import { prefs, loadPreferences } from '../preferences.js'
 import { getForecast } from '../crowd.js'
 import { fetchTravelTime } from '../services/maps.js'
 import { fetchWeatherForecast, packingWeather } from '../services/weatherService.js'
-import { trip, loadDemo, loadFromServer, savedShape, savedBase, markSaved, runtimeStop, newId } from '../itineraryStore.js'
+import { trip, loadDemo, loadFromServer, savedShape, savedBase, markSaved, runtimeStop, newId, addWish, removeWish, wishChangeCount, wishlistBusy } from '../itineraryStore.js'
 import { savedRoutesFromDb, fetchSavedRoutes } from '../savedRoutes.js'
 import { codeForDestination, COUNTRY_CODES } from '../destinations.js'
 import DISCOVER from '../data/discoverCities.json'
@@ -48,10 +48,10 @@ function readSimulate(tripId) {
   }
 }
 
-// Everyone's votes, as text (to notice new votes from the group)
-function votesKey(list) {
+// The wishlist with everyone's votes, as text (to notice places and votes from the group)
+function wishKey(list) {
   const out = []
-  for (const w of list || []) out.push(w.id + ':' + (w.votes || []).slice().sort().join(','))
+  for (const w of list || []) out.push([w.id, w.name, w.address, w.link, (w.votes || []).slice().sort().join(',')].join(':'))
   return out.join('|')
 }
 
@@ -123,8 +123,9 @@ export default {
     this.lastSavedKey = this.persistKey
     this.loaded = true
 
-    // Shared trips: check every 30 seconds whether someone else changed it
-    if (!this.isDemo) this.pollTimer = setInterval(this.pollTrip, 30000)
+    // Shared trips: TripView checks for changes every 5 seconds and hands them over (takeServerTrip).
+    // Routes saved in Getting around are kept apart from the trip: those are checked every 30 seconds.
+    if (!this.isDemo) this.pollTimer = setInterval(() => fetchSavedRoutes(this.tripId), 30000)
 
     // get trip id for transport options feature
     fetchSavedRoutes(this.tripId);
@@ -220,11 +221,9 @@ export default {
       if (!pick) return null
       return { month: MONTH_NAMES[m], place: pick.label.split(', ')[0], temp: pick.temp[m], rainyDays: pick.rain ? pick.rain[m] : null }
     },
-    // What's worth saving, as text. Votes are left out: each vote is saved on its own (PlacesVoting).
+    // What's saved here, as text: the days. (Wishlist places and votes are each saved on their own.)
     persistKey() {
-      const shape = savedShape()
-      for (const w of shape.wishlist) delete w.votes
-      return JSON.stringify(shape)
+      return JSON.stringify(savedShape().stops)
     },
 
     // The days of the trip: the date range if set, otherwise the days that have stops
@@ -325,11 +324,7 @@ export default {
       const pick = trip.wishlist.find((w) => w.id === wishId)
       if (!stop || !pick) return
       this.snapshotDays()
-      const known = trip.wishlist.some((w) => w.name.toLowerCase() === stop.name.toLowerCase())
-      if (!known) {
-        const city = this.destinations.length === 1 ? this.destinations[0] : null
-        trip.wishlist.push({ id: newId('w'), name: stop.name, address: stop.address, outdoor: stop.outdoor, type: 'custom', city, votes: [] })
-      }
+      this.backToWishlist(stop, this.destinations.length === 1 ? this.destinations[0] : null)
       stop.name = pick.name
       stop.address = pick.address || null
       stop.outdoor = !!pick.outdoor
@@ -375,12 +370,8 @@ export default {
       const stop = trip.stops.find((s) => s.id === id)
       if (!stop) return
       this.snapshotDays()
-      const known = trip.wishlist.some((w) => w.name.toLowerCase() === stop.name.toLowerCase())
-      if (!known) {
-        // A stop added straight to the itinerary: file it under the trip's city when there's only one
-        const city = this.destinations.length === 1 ? this.destinations[0] : null
-        trip.wishlist.push({ id: newId('w'), name: stop.name, address: stop.address, outdoor: stop.outdoor, type: 'custom', city, votes: [] })
-      }
+      // A stop added straight to the itinerary: file it under the trip's city when there's only one
+      this.backToWishlist(stop, this.destinations.length === 1 ? this.destinations[0] : null)
       trip.stops = trip.stops.filter((s) => s.id !== id)
       await this.updateTransitTimes()
       this.reportItinerary()
@@ -391,9 +382,16 @@ export default {
       date.setUTCDate(date.getUTCDate() + days)
       return date.toISOString().slice(0, 10)
     },
-    // Remember how things were, for Undo
+    // Remember how things were, for Undo (addedWish = places put back on the wishlist since, which Undo takes out)
     snapshotDays() {
-      this.dayUndo = { ...savedShape(), endDate: this.endDate, selectedDate: this.selectedDate }
+      this.dayUndo = { stops: savedShape().stops, addedWish: [], endDate: this.endDate, selectedDate: this.selectedDate }
+    },
+    // A stop goes back to the wishlist, unless the wishlist already has it
+    backToWishlist(stop, city) {
+      if (trip.wishlist.some((w) => w.name.toLowerCase() === stop.name.toLowerCase())) return
+      const item = { id: newId('w'), name: stop.name, address: stop.address, outdoor: stop.outdoor, type: 'custom', city, votes: [] }
+      if (this.dayUndo) this.dayUndo.addedWish.push(item.id)
+      addWish(this.tripId, item).catch(() => this.showNotice(stop.name + ' could not be put back in the wishlist.'))
     },
     addDay() {
       this.snapshotDays()
@@ -419,8 +417,7 @@ export default {
       const keep = []
       for (const s of trip.stops) {
         if (s.date === date) {
-          const known = trip.wishlist.some((w) => w.name.toLowerCase() === s.name.toLowerCase())
-          if (!known) trip.wishlist.push({ id: newId('w'), name: s.name, address: s.address, outdoor: s.outdoor, type: 'custom', city: null, votes: [] })
+          this.backToWishlist(s, null)
         } else {
           if (s.date > date) s.date = this.shiftDate(s.date, -1)
           keep.push(s)
@@ -437,7 +434,8 @@ export default {
       const u = this.dayUndo
       if (!u) return
       this.dayUndo = null
-      loadFromServer({ stops: u.stops, wishlist: u.wishlist, version: this.tripVersion }, { local: true })
+      for (const id of u.addedWish) removeWish(this.tripId, id).catch(() => {}) // the next check shows it if it stayed
+      loadFromServer({ stops: u.stops, version: this.tripVersion }, { local: true, keepWishlist: true })
       this.selectDay(u.selectedDate)
       await Promise.all(trip.stops.map((item) => this.loadForecast(item)))
       await this.updateTransitTimes()
@@ -483,16 +481,17 @@ export default {
       }
       this.saving = true
       const key = this.persistKey
-      const shape = savedShape() // (with votes: the server keeps everyone else's as they are)
-      const body = { ...shape, version: this.tripVersion, base: savedBase() }
+      const stops = savedShape().stops
+      const body = { stops, version: this.tripVersion, base: savedBase() }
+      const since = wishChangeCount()
       try {
         const res = await axios.put('/api/trips/' + this.tripId + '/itinerary', body)
         if (res.data.merged) {
           // Someone else saved too: the server kept both changes, show them
-          await this.applyServerTrip(res.data.trip)
+          await this.applyServerTrip(res.data.trip, since)
           this.saveStatus = 'All changes saved (with your group\'s latest changes)'
         } else {
-          markSaved(shape)
+          markSaved(stops)
           this.tripVersion = res.data.version
           this.lastSavedKey = key
           this.saveStatus = 'All changes saved'
@@ -502,7 +501,7 @@ export default {
           // Someone else saved first: show their version instead of overwriting it
           this.saveStatus = 'Someone else changed this trip, so their version was loaded.'
           this.showNotice('Someone in your group changed the same days at the same time as you, so their version was loaded. Your last change to the days was not saved, so please redo it.')
-          await this.applyServerTrip(err.response.data.trip)
+          await this.applyServerTrip(err.response.data.trip, since)
         } else if (err.response && err.response.data && err.response.data.message) {
           this.saveStatus = err.response.data.message
           this.showNotice(err.response.data.message + ' Your last change was not saved.')
@@ -514,9 +513,9 @@ export default {
       this.saving = false
     },
 
-    // Replace what is on screen with a saved version from the server
-    async applyServerTrip(saved) {
-      loadFromServer({ stops: saved.stops, wishlist: saved.wishlist })
+    // Replace what is on screen with a saved version from the server, loaded when wishChangeCount() was `since`
+    async applyServerTrip(saved, since) {
+      loadFromServer({ stops: saved.stops, wishlist: saved.wishlist }, { keepWishlist: wishlistBusy(since) })
       this.tripVersion = saved.version
       this.lastSavedKey = this.persistKey // so this load doesn't trigger a save
       await Promise.all(trip.stops.map((item) => this.loadForecast(item)))
@@ -524,22 +523,20 @@ export default {
       this.reportItinerary()
     },
 
-    // Every 30 seconds: has someone else changed this trip?
-    async pollTrip() {
-      // Don't interrupt anything the user is in the middle of
-      if (!this.isDemo) fetchSavedRoutes(this.tripId) // routes saved in Getting around by anyone
-      if (this.isDemo || this.saveTimer || this.saving || this.anyLoading) return
-      if (this.persistKey !== this.lastSavedKey) return // we have unsaved changes of our own
-      try {
-        const res = await axios.get('/api/trips/' + this.tripId)
-        if (res.data.version !== this.tripVersion || votesKey(res.data.wishlist) !== votesKey(trip.wishlist)) {
-          await this.applyServerTrip(res.data)
-          this.saveStatus = 'Updated with changes from your group'
-          this.showNotice('Your group made changes, so this itinerary was updated.', 'info')
-        }
-      } catch (err) {
-        // ignore, we'll try again in 30 seconds
+    // The trip changed on the server (TripView noticed, loaded it when wishChangeCount() was `since`).
+    // Show other people's changes, unless we are in the middle of something: then answer false,
+    // and TripView offers it again on its next check.
+    async takeServerTrip(saved, since) {
+      if (this.isDemo) return true
+      if (this.saveTimer || this.saving || this.anyLoading) return false
+      if (this.persistKey !== this.lastSavedKey) return false // we have unsaved changes of our own
+      if (wishlistBusy(since)) return false // a wishlist change of ours may not be in this answer yet
+      if (saved.version !== this.tripVersion || wishKey(saved.wishlist) !== wishKey(trip.wishlist)) {
+        await this.applyServerTrip(saved, since)
+        this.saveStatus = 'Updated with changes from your group'
+        this.showNotice('Your group made changes, so this itinerary was updated.', 'info')
       }
+      return true
     },
     
 

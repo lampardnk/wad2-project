@@ -127,6 +127,7 @@
         <FlightDelayWidget v-if="isDemo" />
         <!-- editRev: after "Edit trip" the planner starts again from the saved trip (new dates, moved stops) -->
         <ItineraryView
+          ref="itinerary"
           :key="'itin-' + editRev"
           :trip-id="id"
           :destination="itineraryInfo.destination"
@@ -156,7 +157,7 @@
           </div>
         </transition>
         <transition name="guide" mode="out-in">
-          <WishlistView v-if="placesTab === 'wishlist'" key="w" :destinations="itineraryInfo.destinations"
+          <WishlistView v-if="placesTab === 'wishlist'" key="w" :trip-id="id" :destinations="itineraryInfo.destinations"
             :start-date="itineraryInfo.startDate" :end-date="itineraryInfo.endDate" />
           <PlacesVoting v-else key="v" :trip-id="id" :travellers="itineraryInfo.travellers" :me="myName" :can-vote-for="canVoteFor" @go-wishlist="placesTab = 'wishlist'" @members-changed="reloadTrip" />
         </transition>
@@ -235,7 +236,7 @@ import CrewView from '../components/CrewView.vue'
 import TripTabs from '../components/TripTabs.vue'
 import TabIcon from '../components/TabIcon.vue'
 import { auth } from '../auth.js'
-import { trip as store } from '../itineraryStore.js'
+import { trip as store, wishChangeCount } from '../itineraryStore.js'
 import { codeForDestination, flagEmoji } from '../destinations.js'
 import AppIcon from '../components/AppIcon.vue'
 import LoadingSkeleton from '../components/LoadingSkeleton.vue'
@@ -254,6 +255,8 @@ export default {
       activeTab: 'itinerary',
       placesTab: 'wishlist', // inside Places: 'wishlist' | 'vote'
       returnTo: null, // { date, day } when Places was opened from the itinerary's "Add stop"
+      changedAt: null, // when the trip last changed, as we last loaded it (see checkForChanges)
+      checking: false,
       savedAtStart: 0, // wishlist size at that moment, to count the new saves
       // Sections in the top bar (title + desc are shown above the open section)
       tabs: [
@@ -430,13 +433,19 @@ export default {
     }
     this.loading = false
     this.loadPhoto()
-    // Shared trips: pick up who joined, crew cards and the hotel every 30 seconds
-    if (!this.isDemo) this.pollTimer = setInterval(() => { if (!document.hidden) this.reloadTrip() }, 30000)
+    // Shared trips: every 5 seconds, ask whether anything changed (a tiny answer), and only then load it all.
+    // Not while the tab is hidden; straight away when you come back to it.
+    if (!this.isDemo) {
+      this.changedAt = this.trip ? this.trip.changedAt : null
+      this.pollTimer = setInterval(this.checkForChanges, 5000)
+      document.addEventListener('visibilitychange', this.checkForChanges)
+    }
     window.addEventListener('resize', this.fitStage)
     this.$nextTick(this.fitStage)
   },
   beforeUnmount() {
     clearInterval(this.pollTimer)
+    document.removeEventListener('visibilitychange', this.checkForChanges)
     window.removeEventListener('resize', this.fitStage)
   },
   methods: {
@@ -494,6 +503,25 @@ export default {
         text = 'Trip updated. ' + saved.movedStops + (saved.movedStops === 1 ? ' stop' : ' stops') + ' moved ' + days + (saved.shiftDays > 0 ? ' later.' : ' earlier.')
       }
       notify(text, null, 'ok')
+    },
+    // Load the whole trip only when it changed (who joined, crew cards, the hotel, the days, the wishlist)
+    async checkForChanges() {
+      if (document.hidden || this.checking) return
+      this.checking = true
+      try {
+        const res = await axios.get('/api/trips/' + this.id + '/changed')
+        if (res.data.changedAt !== this.changedAt) {
+          const since = wishChangeCount()
+          const full = await axios.get('/api/trips/' + this.id)
+          this.trip = full.data
+          // The planner may be busy saving a change of its own: then it is offered the trip again next time
+          const planner = this.$refs.itinerary
+          if (!planner || (await planner.takeServerTrip(full.data, since))) this.changedAt = full.data.changedAt
+        }
+      } catch (err) {
+        // keep what we have, and try again in 5 seconds
+      }
+      this.checking = false
     },
     async reloadTrip() {
       try {

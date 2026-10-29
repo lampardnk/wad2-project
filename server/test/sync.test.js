@@ -11,28 +11,59 @@ after(stopDb)
 const put = (id, token, path, body) => request(app).put('/api/trips/' + id + path).set('Authorization', token).send(body)
 const get = (id, token, path = '') => request(app).get('/api/trips/' + id + path).set('Authorization', token)
 
-test('wishlist: Amy and Ben save a place at the same time, both are kept', async () => {
+const post = (id, token, path, body) => request(app).post('/api/trips/' + id + path).set('Authorization', token).send(body)
+const del = (id, token, path) => request(app).delete('/api/trips/' + id + path).set('Authorization', token)
+const patch = (id, token, path, body) => request(app).patch('/api/trips/' + id + path).set('Authorization', token).send(body)
+
+test('wishlist: Amy and Ben save places at the same moment, every place is kept', async () => {
   const t = await makeTrip()
-  const base = { stops: [], wishlist: [] }
-  const r1 = await put(t.id, t.amy, '/itinerary', { stops: [], wishlist: [place('w1')], version: 0, base })
-  const r2 = await put(t.id, t.ben, '/itinerary', { stops: [], wishlist: [place('w2')], version: 0, base })
-  assert.equal(r1.status, 200)
-  assert.equal(r2.status, 200)
-  assert.equal(r2.body.merged, true)
+  const adds = []
+  for (let i = 0; i < 5; i++) {
+    adds.push(post(t.id, t.amy, '/wishlist', place('a' + i)))
+    adds.push(post(t.id, t.ben, '/wishlist', place('b' + i)))
+  }
+  for (const r of await Promise.all(adds)) assert.equal(r.status, 200)
   const trip = (await get(t.id, t.amy)).body
-  assert.deepEqual(trip.wishlist.map((w) => w.id).sort(), ['w1', 'w2'])
+  assert.equal(trip.wishlist.length, 10)
 })
 
-test('itinerary: Ben adds a place while Amy moves a stop, both are kept', async () => {
+test('wishlist: Amy removes a place while Ben adds one, both changes stay', async () => {
+  const t = await makeTrip({ wishlist: [place('w1'), place('w2')] })
+  const [r1, r2] = await Promise.all([del(t.id, t.amy, '/wishlist/w1'), post(t.id, t.ben, '/wishlist', place('w3'))])
+  assert.equal(r1.status, 200)
+  assert.equal(r2.status, 200)
+  assert.deepEqual((await get(t.id, t.amy)).body.wishlist.map((w) => w.id).sort(), ['w2', 'w3'])
+})
+
+test('wishlist: the same add sent twice is saved once', async () => {
+  const t = await makeTrip()
+  await Promise.all([post(t.id, t.amy, '/wishlist', place('w1')), post(t.id, t.amy, '/wishlist', place('w1'))])
+  assert.equal((await get(t.id, t.amy)).body.wishlist.length, 1)
+})
+
+test('wishlist: editing a place changes only that place, and keeps its votes', async () => {
+  const t = await makeTrip({ wishlist: [place('w1', { name: 'Shrine', votes: ['Ben'] }), place('w2', { name: 'Market' })] })
+  const r = await patch(t.id, t.amy, '/wishlist/w1', { name: 'Meiji Shrine', address: 'Shibuya, Tokyo' })
+  assert.equal(r.status, 200)
+  const [w1, w2] = (await get(t.id, t.amy)).body.wishlist
+  assert.equal(w1.name, 'Meiji Shrine')
+  assert.equal(w1.address, 'Shibuya, Tokyo')
+  assert.deepEqual(w1.votes, ['Ben'])
+  assert.equal(w2.name, 'Market')
+  assert.equal((await patch(t.id, t.amy, '/wishlist/gone', { name: 'X' })).status, 404)
+})
+
+test('itinerary: an older page saving the days cannot undo a place Ben just added', async () => {
   const t = await makeTrip()
   const s = stop('s1', '2026-12-01', 9)
-  await put(t.id, t.amy, '/itinerary', { stops: [s], wishlist: [], version: 0 })
-  const base = { stops: [s], wishlist: [] }
-  await put(t.id, t.amy, '/itinerary', { stops: [{ ...s, hour: 14 }], wishlist: [], version: 1, base })
-  const r = await put(t.id, t.ben, '/itinerary', { stops: [s], wishlist: [place('w9')], version: 1, base })
+  await put(t.id, t.amy, '/itinerary', { stops: [s], version: 0 })
+  await post(t.id, t.ben, '/wishlist', place('w9'))
+  // Amy's page still shows an empty wishlist, and sends it along with a stop move
+  const r = await put(t.id, t.amy, '/itinerary', { stops: [{ ...s, hour: 14 }], wishlist: [], version: 1, base: { stops: [s], wishlist: [] } })
   assert.equal(r.status, 200)
-  assert.equal(r.body.trip.stops[0].hour, 14) // Amy's move
-  assert.equal(r.body.trip.wishlist[0].id, 'w9') // Ben's place
+  const trip = (await get(t.id, t.amy)).body
+  assert.equal(trip.stops[0].hour, 14) // Amy's move
+  assert.deepEqual(trip.wishlist.map((w) => w.id), ['w9']) // Ben's place
 })
 
 test('itinerary: both change the days at once, the second gets 409 with the latest trip', async () => {
@@ -71,4 +102,16 @@ test('packing: an item someone adds keeps who added it', async () => {
   await put(t.id, t.ben, '/packing', { packing: { ...empty, custom: [film] }, base: empty })
   const res = await get(t.id, t.amy, '/packing')
   assert.equal(res.body.packing.custom[0].by, 'Ben')
+})
+
+test('the trip page notices any change with a tiny check', async () => {
+  const t = await makeTrip()
+  const first = (await get(t.id, t.amy, '/changed')).body.changedAt
+  assert.ok(first)
+  assert.equal((await get(t.id, t.ben, '/changed')).body.changedAt, first) // nothing changed
+  await new Promise((resolve) => setTimeout(resolve, 5))
+  await post(t.id, t.ben, '/wishlist', place('w1'))
+  const after = (await get(t.id, t.amy, '/changed')).body.changedAt
+  assert.notEqual(after, first)
+  assert.equal((await get(t.id, t.amy)).body.changedAt, after) // the full trip says the same
 })

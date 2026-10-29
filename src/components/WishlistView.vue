@@ -8,6 +8,7 @@
 
     <!-- ===== Your wishlist ===== -->
     <h3 class="wl-heading">Your wishlist <span class="wl-count">{{ wishlist.length }}</span></h3>
+    <p v-if="saveError" class="text-danger small" role="alert">{{ saveError }}</p>
 
     <transition-group v-if="shownWishlist.length" name="card" tag="div" class="wl-grid" data-testid="wishlist">
       <article v-for="w in shownWishlist" :key="w.id" :data-wish="w.id" class="wl-card mine" :class="{ 'has-photo': photoOf(w), editing: editId === w.id }" :style="{ '--tint': tintFor(w.type) }">
@@ -223,7 +224,7 @@
 
 <script>
 import axios from 'axios'
-import { trip, newId, runtimeStop } from '../itineraryStore.js'
+import { trip, newId, runtimeStop, addWish, editWish, removeWish } from '../itineraryStore.js'
 import { codeForDestination, flagEmoji } from '../destinations.js'
 import { placeStyle } from '../placeStyle.js'
 import CustomDropdown from './CustomDropdown.vue'
@@ -267,6 +268,7 @@ function emptyTour() {
 export default {
   components: { AppIcon, CustomDropdown },
   props: {
+    tripId: { type: String, default: '' }, // where wishlist changes are saved ('' or 'seoul' = the demo, not saved)
     // All of the trip's destinations, e.g. ['Tokyo, Japan', 'Kyoto, Japan']
     destinations: { type: Array, default: () => [] },
     startDate: { type: String, default: '' },
@@ -291,6 +293,7 @@ export default {
       found: [],         // results from /api/places/search
       searching: false,
       searchError: '',
+      saveError: '', // the last wishlist change the server refused (it was undone)
       searchTimer: null,
       openChain: null,   // name of the chain whose branches are shown
       active: -1,
@@ -514,7 +517,7 @@ export default {
         id: newId('w'), name, address: t.address.trim() || null, outdoor: t.outdoor, type: 'tour',
         city: this.searchIn || null, votes: [], duration: t.duration, bookedVia: t.bookedVia || null, link: link || null
       }
-      trip.wishlist.push(item)
+      this.keep(addWish(this.tripId, item))
       // A booked date + time: put it straight on that day, locked so nothing moves it
       if (t.date && t.time) {
         const parts = t.time.split(':')
@@ -652,7 +655,7 @@ export default {
 
     addPopular(p) {
       if (this.isAdded(p)) return
-      trip.wishlist.push({ id: newId('w'), name: p.name, address: p.address || null, outdoor: !p.indoor, type: p.type, city: p.city || null, votes: [] })
+      this.keep(addWish(this.tripId, { id: newId('w'), name: p.name, address: p.address || null, outdoor: !p.indoor, type: p.type, city: p.city || null, votes: [] }))
       this.clearForm()
     },
 
@@ -701,14 +704,14 @@ export default {
     },
 
     addFound(group, branch) {
-      trip.wishlist.push({ id: newId('w'), name: group.name, address: branch.address, outdoor: !group.indoor, type: group.type, city: this.searchIn || null, votes: [] })
+      this.keep(addWish(this.tripId, { id: newId('w'), name: group.name, address: branch.address, outdoor: !group.indoor, type: group.type, city: this.searchIn || null, votes: [] }))
       this.clearForm()
     },
 
     addOwn() {
       const name = this.form.name.trim()
       if (!name) return
-      trip.wishlist.push({ id: newId('w'), name, address: this.form.address.trim() || null, outdoor: false, type: 'custom', city: this.searchIn || null, votes: [] })
+      this.keep(addWish(this.tripId, { id: newId('w'), name, address: this.form.address.trim() || null, outdoor: false, type: 'custom', city: this.searchIn || null, votes: [] }))
       this.clearForm()
     },
 
@@ -734,8 +737,17 @@ export default {
     },
 
     remove(w) {
-      trip.wishlist = trip.wishlist.filter((x) => x.id !== w.id)
+      this.keep(removeWish(this.tripId, w.id))
       if (this.editId === w.id) this.editId = null
+    },
+
+    // Each wishlist change is saved on its own; if the server refuses one, it is undone and we say why
+    keep(saving) {
+      this.saveError = ''
+      saving.catch((err) => {
+        const why = err.response && err.response.data && err.response.data.message
+        this.saveError = (why || 'That change could not be saved. Check your connection.') + ' It was undone.'
+      })
     },
 
     startEdit(w) {
@@ -774,17 +786,13 @@ export default {
     saveEdit() {
       const name = this.editForm.name.trim()
       if (!name) return
-      for (const w of trip.wishlist) {
-        if (w.id === this.editId) {
-          w.name = name
-          w.address = this.editForm.address.trim() || null
-          if (this.editForm.isTour) {
-            let link = this.editForm.link.trim()
-            if (link && !/^https?:\/\//i.test(link)) link = 'https://' + link
-            w.link = link || null
-          }
-        }
+      const changes = { name, address: this.editForm.address.trim() || null }
+      if (this.editForm.isTour) {
+        let link = this.editForm.link.trim()
+        if (link && !/^https?:\/\//i.test(link)) link = 'https://' + link
+        changes.link = link || null
       }
+      this.keep(editWish(this.tripId, this.editId, changes))
       this.backToCard(this.editId)
       this.editId = null
     },

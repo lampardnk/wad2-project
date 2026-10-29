@@ -30,7 +30,7 @@
       <TripShare v-if="step === 'invite'" inline :trip-id="id" :trip-name="tripInfo.name" :members="tripInfo.members"
         :travellers="tripInfo.travellers" :role="tripInfo.role" :me="tripInfo.me" :pending-invites="tripInfo.pendingInvites"
         @changed="reloadInfo" />
-      <WishlistView v-else-if="step === 'wishlist'" :destinations="tripInfo.destinations" />
+      <WishlistView v-else-if="step === 'wishlist'" :trip-id="id" :destinations="tripInfo.destinations" />
       <PlacesVoting v-else :trip-id="id" :travellers="tripInfo.travellers" :me="tripInfo.me" :can-vote-for="canVoteFor" @go-wishlist="goTo('wishlist')" />
 
       <!-- Bottom bar -->
@@ -106,11 +106,9 @@ export default {
     stepIndex() {
       return this.steps.findIndex((s) => s.key === this.step)
     },
-    // Votes are left out: each vote is saved on its own (PlacesVoting)
+    // The days (a booked tour goes straight onto its day). Wishlist places and votes are each saved on their own.
     saveKey() {
-      const list = savedShape().wishlist
-      for (const w of list) delete w.votes
-      return JSON.stringify(list)
+      return JSON.stringify(savedShape().stops)
     }
   },
 

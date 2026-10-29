@@ -1,12 +1,12 @@
 import express from 'express'
 import { requireAuth } from './auth.js'
-import { askOverpassFast, nominatim } from './places.js'
+import { askOverpassFast, nominatim, photonOrBackup } from './places.js'
+import PlaceLookup from '../models/PlaceLookup.js'
 
 // Safety tab helpers. These run on our server (not in the browser) so that:
 //  - busy OpenStreetMap servers are retried and results are cached (no more 504s in the browser)
 //  - the same answer is reused by everyone on the trip
 const router = express.Router()
-const HEADERS = { 'User-Agent': 'ChuiseYourTrip/1.0 (SMU IS216 student project)' }
 const DAY = 24 * 60 * 60 * 1000
 
 const nearbyCache = new Map() // 'lat,lon,home' -> { time, data }
@@ -23,13 +23,8 @@ const round = (n) => Math.round(Number(n) * 1000) / 1000
 
 // Photon (OpenStreetMap search). lang 'default' gives local names, e.g. Japanese.
 async function photon(params) {
-  try {
-    const url = 'https://photon.komoot.io/api/?' + new URLSearchParams(params)
-    const res = await fetch(url, { headers: HEADERS, signal: AbortSignal.timeout(8000) })
-    if (!res.ok) throw new Error('Photon ' + res.status)
-    return await res.json()
-  } catch (err) {
-    // Photon is busy or refusing us: Nominatim has the same OpenStreetMap places (answer reshaped like Photon's)
+  // Photon is slow or refusing us: Nominatim has the same OpenStreetMap places (answer reshaped like Photon's)
+  return photonOrBackup(params, async (signal) => {
     const q = { q: params.q, limit: params.limit || '5', addressdetails: '1' }
     if (params.lang !== 'default') q['accept-language'] = 'en'
     if (params.lat) {
@@ -38,9 +33,9 @@ async function photon(params) {
       q.viewbox = [lon - 0.3, lat + 0.3, lon + 0.3, lat - 0.3].join(',')
       if (params.osm_tag) q.bounded = '1' // "hospital" etc.: only ones around here
     }
-    let list = await nominatim(q)
+    let list = await nominatim(q, signal)
     // Nominatim needs every word to match: "Sun Moon Lake, Taipei" finds nothing (it isn't in Taipei)
-    if (!list.length && q.q.includes(',')) list = await nominatim({ ...q, q: q.q.split(',')[0] })
+    if (!list.length && q.q.includes(',')) list = await nominatim({ ...q, q: q.q.split(',')[0] }, signal)
     return {
       features: list.map((r) => {
         const a = r.address || {}
@@ -54,7 +49,7 @@ async function photon(params) {
         }
       })
     }
-  }
+  })
 }
 
 function addressOf(p) {
@@ -86,56 +81,97 @@ function kmBetween(a, b) {
   return Math.sqrt(x * x + y * y) * 6371
 }
 
+// A place's coordinates: memory, then MongoDB, then the map services. Null = not found.
+// "Not found" is remembered for a day and "the map services failed" for 5 minutes, so a trip page
+// that asks for every stop again doesn't send the same questions over and over. When the same place
+// is asked for twice at once (two people opening the trip), the second waits for the first answer.
+const FOUND_DAYS = 30
+const MISS_MS = DAY
+const FAIL_MS = 5 * 60 * 1000
+const misses = new Map() // key -> { until, failed }
+const inFlight = new Map() // key -> the lookup's promise
+async function locate(place, near) {
+  const key = (place + '|' + near).toLowerCase()
+  if (placeCache.has(key)) return placeCache.get(key)
+  const miss = misses.get(key)
+  if (miss && Date.now() < miss.until) {
+    if (miss.failed) throw new Error('Place lookup failed a moment ago')
+    return null
+  }
+  if (!inFlight.has(key)) inFlight.set(key, lookUp(place, near, key).finally(() => inFlight.delete(key)))
+  return inFlight.get(key)
+}
+async function lookUp(place, near, key) {
+  const saved = await PlaceLookup.findOne({ key })
+  if (saved) {
+    const age = Date.now() - saved.fetchedAt.getTime()
+    if (saved.place && age < FOUND_DAYS * DAY) {
+      remember(placeCache, key, saved.place)
+      return saved.place
+    }
+    if (!saved.place && age < MISS_MS) {
+      remember(misses, key, { until: saved.fetchedAt.getTime() + MISS_MS })
+      return null
+    }
+  }
+  let found
+  try {
+    found = await findPlace(place, near)
+  } catch (err) {
+    remember(misses, key, { until: Date.now() + FAIL_MS, failed: true })
+    throw err
+  }
+  if (found) remember(placeCache, key, found)
+  else remember(misses, key, { until: Date.now() + MISS_MS })
+  await PlaceLookup.updateOne({ key }, { place: found, fetchedAt: new Date() }, { upsert: true })
+  return found
+}
+
+// Ask the map services where a place is (see locate for the caching)
+async function findPlace(place, near) {
+  let found = null
+  if (near) {
+    // Where the city is (cached like any other lookup)
+    const city = await locate(near, '')
+    if (city) {
+      // Results ranked around the city; keep the closest one that's actually nearby
+      const data = await photon({ q: place, limit: '8', lang: 'en', lat: String(city.lat), lon: String(city.lon) })
+      let best = null
+      let bestKm = Infinity
+      for (const f of data.features || []) {
+        const r = toResult(f, place)
+        const km = kmBetween(city, r)
+        if (km < bestKm) {
+          best = r
+          bestKm = km
+        }
+      }
+      if (best && bestKm <= 80) found = best
+      // Nothing that close: try the name together with the city
+      if (!found) {
+        const f = await locateOne(place + ', ' + near)
+        if (f) {
+          const r = toResult(f, place)
+          if (kmBetween(city, r) <= 80) found = r
+        }
+      }
+      if (!found && best) found = best // closest we have
+    }
+  }
+  if (!found) {
+    const f = await locateOne(place)
+    if (f) found = toResult(f, place)
+  }
+  return found
+}
+
 router.get('/locate', requireAuth, async (req, res) => {
   const place = String(req.query.place || '').trim().slice(0, 200)
   const near = String(req.query.near || '').trim().slice(0, 120)
   if (!place) return res.status(400).json({ message: 'Which place?' })
-  const key = (place + '|' + near).toLowerCase()
-  if (placeCache.has(key)) return res.json(placeCache.get(key))
   try {
-    let found = null
-    if (near) {
-      // Where the city is (cached like any other lookup)
-      const cityKey = (near + '|').toLowerCase()
-      let city = placeCache.get(cityKey)
-      if (!city) {
-        const f = await locateOne(near)
-        if (f) {
-          city = toResult(f, near)
-          remember(placeCache, cityKey, city)
-        }
-      }
-      if (city) {
-        // Results ranked around the city; keep the closest one that's actually nearby
-        const data = await photon({ q: place, limit: '8', lang: 'en', lat: String(city.lat), lon: String(city.lon) })
-        let best = null
-        let bestKm = Infinity
-        for (const f of data.features || []) {
-          const r = toResult(f, place)
-          const km = kmBetween(city, r)
-          if (km < bestKm) {
-            best = r
-            bestKm = km
-          }
-        }
-        if (best && bestKm <= 80) found = best
-        // Nothing that close: try the name together with the city
-        if (!found) {
-          const f = await locateOne(place + ', ' + near)
-          if (f) {
-            const r = toResult(f, place)
-            if (kmBetween(city, r) <= 80) found = r
-          }
-        }
-        if (!found && best) found = best // closest we have
-      }
-    }
-    if (!found) {
-      const f = await locateOne(place)
-      if (!f) return res.status(404).json({ message: 'Could not find that place.' })
-      found = toResult(f, place)
-    }
-    remember(placeCache, key, found)
+    const found = await locate(place, near)
+    if (!found) return res.status(404).json({ message: 'Could not find that place.' })
     res.json(found)
   } catch (err) {
     res.status(502).json({ message: 'Place lookup is unavailable right now.' })

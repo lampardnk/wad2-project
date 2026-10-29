@@ -58,21 +58,22 @@ export function loadDemo() {
   ]
 }
 
-// The stops + wishlist as last loaded from (or saved to) the server. Sent with each save as "base",
-// so the server can merge two people's changes instead of one overwriting the other.
+// The stops as last loaded from (or saved to) the server. Sent with each save as "base",
+// so the server can keep someone else's changes to the days instead of overwriting them.
 let base = null
 export function savedBase() {
   return base
 }
-export function markSaved(shape) {
-  base = shape || savedShape()
+export function markSaved(stops) {
+  base = { stops: stops || savedShape().stops }
 }
 
-// A saved trip from the server (local: true = an Undo snapshot, not what the server has)
-export function loadFromServer(saved, { local = false } = {}) {
+// A saved trip from the server (local: true = an Undo snapshot, not what the server has).
+// While a wishlist change of ours is still on its way, the wishlist on screen is kept (see wishlistBusy).
+export function loadFromServer(saved, { local = false, keepWishlist = false } = {}) {
   trip.version = saved.version || 0 // sent back when saving, so we never overwrite someone else's changes
   trip.stops = (saved.stops || []).map(runtimeStop)
-  trip.wishlist = (saved.wishlist || []).map((w) => ({
+  if (!keepWishlist) trip.wishlist = (saved.wishlist || []).map((w) => ({
     id: w.id, name: w.name, address: w.address || null, outdoor: !!w.outdoor,
     type: w.type || null, city: w.city || null, votes: Array.isArray(w.votes) ? w.votes : [],
     duration: w.duration || null, bookedVia: w.bookedVia || null, link: w.link || null
@@ -87,18 +88,69 @@ export function savedShape() {
     wishlist: trip.wishlist.map((w) => ({ id: w.id, name: w.name, address: w.address, outdoor: !!w.outdoor, type: w.type || null, city: w.city || null, votes: w.votes || [], duration: w.duration || null, bookedVia: w.bookedVia || null, link: w.link || null }))
   }
 }
-// Save the open trip's stops + wishlist (for pages that don't show the itinerary, e.g. trip setup)
+// Save the open trip's stops (for pages that don't show the itinerary, e.g. trip setup)
 export async function saveTrip(tripId) {
   if (!tripId || tripId === 'seoul') return // the demo trip isn't saved
+  const since = wishChangeCount()
   try {
-    const shape = savedShape()
-    const res = await axios.put('/api/trips/' + tripId + '/itinerary', { ...shape, version: trip.version, base })
-    if (res.data.merged) loadFromServer(res.data.trip) // someone else saved too: show both changes
-    else markSaved(shape)
+    const stops = savedShape().stops
+    const res = await axios.put('/api/trips/' + tripId + '/itinerary', { stops, version: trip.version, base })
+    if (res.data.merged) loadFromServer(res.data.trip, { keepWishlist: wishlistBusy(since) }) // someone else saved too: show both changes
+    else markSaved(stops)
     trip.version = res.data.version
   } catch (err) {
     // 409: someone else saved first. Show their version instead of overwriting it.
-    if (err.response && err.response.status === 409) loadFromServer(err.response.data.trip)
+    if (err.response && err.response.status === 409) loadFromServer(err.response.data.trip, { keepWishlist: wishlistBusy(since) })
     throw err
   }
+}
+
+// ---------- wishlist: saved one place at a time ----------
+// Each add, edit or remove is its own request that changes just that place on the server,
+// so two people saving places at the same moment never overwrite each other.
+// The change shows at once; if the server says no, it is undone and the error is passed on.
+let wishChanges = 0 // wishlist changes made on this page so far
+let wishPending = 0 // of those, still on their way to the server
+export function wishChangeCount() {
+  return wishChanges
+}
+// True while a change is on its way, or one was made since `since` (= wishChangeCount() earlier):
+// a trip loaded before then may not have it yet, so its wishlist must not replace ours.
+export function wishlistBusy(since) {
+  return wishPending > 0 || wishChanges !== since
+}
+async function wishRequest(tripId, send, undo) {
+  wishChanges++
+  if (!tripId || tripId === 'seoul') return // the demo trip isn't saved
+  wishPending++
+  try {
+    await send('/api/trips/' + tripId + '/wishlist')
+  } catch (err) {
+    undo()
+    throw err
+  } finally {
+    wishPending--
+  }
+}
+export function addWish(tripId, item) {
+  trip.wishlist.push(item)
+  return wishRequest(tripId, (url) => axios.post(url, item), () => {
+    trip.wishlist = trip.wishlist.filter((w) => w.id !== item.id)
+  })
+}
+export function editWish(tripId, id, changes) {
+  const w = trip.wishlist.find((x) => x.id === id)
+  if (!w) return Promise.resolve()
+  const before = {}
+  for (const k in changes) before[k] = w[k]
+  Object.assign(w, changes)
+  return wishRequest(tripId, (url) => axios.patch(url + '/' + id, changes), () => Object.assign(w, before))
+}
+export function removeWish(tripId, id) {
+  const i = trip.wishlist.findIndex((x) => x.id === id)
+  if (i < 0) return Promise.resolve()
+  const [w] = trip.wishlist.splice(i, 1)
+  return wishRequest(tripId, (url) => axios.delete(url + '/' + id), () => {
+    if (!trip.wishlist.some((x) => x.id === id)) trip.wishlist.splice(Math.min(i, trip.wishlist.length), 0, w)
+  })
 }

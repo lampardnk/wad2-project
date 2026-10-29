@@ -2,6 +2,7 @@ import express from 'express';
 import SavedRoute from '../models/transport.js';
 import { requireAuth } from './auth.js';
 import { findTripFor } from '../tripAccess.js';
+import { remembered } from '../cache.js';
 const router = express.Router();
 
 // different transport modes
@@ -206,24 +207,39 @@ router.get('/', requireAuth, async (req, res) => {
         timeOpts = { time: d.toISOString(), timeType: timeType === 'arrive' ? 'arrive' : 'depart' };
     }
 
+    // Google charges per request: the same trip at the same time (to 15 minutes) is asked once a day
+    let when = '';
+    if (timeOpts.time) {
+        const d = new Date(timeOpts.time);
+        d.setUTCMinutes(Math.floor(d.getUTCMinutes() / 15) * 15, 0, 0);
+        when = d.toISOString() + '|' + timeOpts.timeType;
+    }
+    const key = ['routes', origin, destination, when].join('|').toLowerCase();
+
     try {
-        // fetch all modes
-        const rawResults = await Promise.all(MODES.map(m => fetchMode(origin, destination, m, timeOpts)));
-        // removing failed results
-        const valid = rawResults.filter(Boolean);
-
-        // keep unique & fastest route
-        const best = new Map();
-
-        for (const item of valid) {
-            const existing = best.get(item.signature);
-            if (!existing || item.duration < existing.duration) {
-                best.set(item.signature, item);
+        const unique = await remembered(key, 24 * 60 * 60 * 1000, async () => {
+            // fetch all modes
+            const rawResults = await Promise.all(MODES.map(m => fetchMode(origin, destination, m, timeOpts)));
+            // removing failed results
+            const valid = rawResults.filter(Boolean);
+            // nothing at all (Google down, or no route): not saved, so it is asked again next time
+            if (!valid.length) {
+                return undefined;
             }
-        }
-        // turns map's values into normal array 
-        const unique = [...best.values()].map(({ signature, ...rest }) => rest);
-        res.json(unique);
+
+            // keep unique & fastest route
+            const best = new Map();
+
+            for (const item of valid) {
+                const existing = best.get(item.signature);
+                if (!existing || item.duration < existing.duration) {
+                    best.set(item.signature, item);
+                }
+            }
+            // turns map's values into normal array 
+            return [...best.values()].map(({ signature, ...rest }) => rest);
+        });
+        res.json(unique || []);
     } catch (error) {
         console.error('Directions route error:', error);
         res.status(500).json({ error: 'Failed to get directions' });

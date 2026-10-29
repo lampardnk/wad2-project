@@ -38,7 +38,9 @@ async function photon(params) {
       q.viewbox = [lon - 0.3, lat + 0.3, lon + 0.3, lat - 0.3].join(',')
       if (params.osm_tag) q.bounded = '1' // "hospital" etc.: only ones around here
     }
-    const list = await nominatim(q)
+    let list = await nominatim(q)
+    // Nominatim needs every word to match: "Sun Moon Lake, Taipei" finds nothing (it isn't in Taipei)
+    if (!list.length && q.q.includes(',')) list = await nominatim({ ...q, q: q.q.split(',')[0] })
     return {
       features: list.map((r) => {
         const a = r.address || {}

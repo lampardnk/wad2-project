@@ -10,7 +10,7 @@ const MODES = [
     { mode: 'TRANSIT', allowedModes: ['BUS', 'SUBWAY', 'TRAIN'], fallbackType: 'Bus & Train' },
     { mode: 'TRANSIT', allowedModes: ['BUS'], fallbackType: 'Bus' },
     { mode: 'TRANSIT', allowedModes: ['SUBWAY', 'TRAIN'], fallbackType: 'Train / MRT' },
-    { mode: 'DRIVE', fallbackType: 'Taxi / Car' },
+    { mode: 'DRIVE', fallbackType: 'Car' },
     { mode: 'WALK', fallbackType: 'Walk' }
 ];
 
@@ -51,18 +51,22 @@ async function fetchMode(origin, destination, { mode, allowedModes, fallbackType
     const { time, timeType } = timeOpts;   
 
     if (time) {
+    if (new Date(time).getTime() > Date.now()) {
+
         if (mode === 'TRANSIT') {
-            // set as arrive/departure time 
             if (timeType === 'arrive') {
                 payload.arrivalTime = time;
             } else {
                 payload.departureTime = time;
             }
-        } else if (mode === 'DRIVE' && timeType !== 'arrive') { 
+
+        } else if (mode === 'DRIVE' && timeType !== 'arrive') {
             payload.departureTime = time;
-            payload.routingPreference = 'TRAFFIC_AWARE';   // needed for the time to affect the estimate
+            payload.routingPreference = 'TRAFFIC_AWARE';
         }
+
     }
+}
 
     try {
         // send the request and wait for google’s reply
@@ -71,7 +75,7 @@ async function fetchMode(origin, destination, { mode, allowedModes, fallbackType
             headers: {
                 'Content-Type': 'application/json',  // JSON file
                 'X-Goog-Api-Key': KEY, 
-                'X-Goog-FieldMask': 'routes.duration,routes.description,routes.travelAdvisory.transitFare,routes.legs.steps' // list wanted fields
+                'X-Goog-FieldMask': 'routes.duration,routes.distanceMeters,routes.description,routes.travelAdvisory.transitFare,routes.legs.steps' // list wanted fields
             },
             body: JSON.stringify(payload) 
         });
@@ -145,9 +149,9 @@ async function fetchMode(origin, destination, { mode, allowedModes, fallbackType
 
             flushWalk(); // walking at the very end of the trip
 
-            // Only walking (no bus or train at all) is not a transit option: the Walk row covers it
+            // Ignore "transit" routes that are actually walking only.
             if (!hasBus && !hasTrain) {
-                return null;
+            return null;
             }
 
             if (hasBus && hasTrain) {
@@ -181,8 +185,16 @@ async function fetchMode(origin, destination, { mode, allowedModes, fallbackType
         } else if (mode === 'WALK') {
             cost = 0;
         }
-
-        return { type: dynamicType, route: description, duration: totalMinutes, cost, currency, signature };
+        
+        return {
+            type: dynamicType,
+            route: description,
+            duration: totalMinutes,
+            distance: route.distanceMeters,
+            cost,
+            currency,
+            signature
+        };
     } catch (error) {
         console.error(`❌ Fetch failed for mode [${mode}]:`, error.message);
         return null;

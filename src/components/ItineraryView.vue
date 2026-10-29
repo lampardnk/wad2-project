@@ -11,17 +11,17 @@
 
     <!-- Weather: the live forecast, or made-up days for a demo (only on this browser) -->
     <p class="weather-mode small">
-      <label><input v-model="simulateWeather" type="checkbox" data-testid="simulate-weather"> Simulate weather (demo)</label>
-      <span v-if="weatherError && !simulateWeather" class="text-muted"> · Live forecast unavailable right now</span>
+      <label><input v-model="demoWeather" type="checkbox" data-testid="simulate-weather"> Simulate weather (demo)</label>
+      <span v-if="weatherError && !demoWeather" class="text-muted"> · Live forecast unavailable right now</span>
     </p>
 
     <!-- The itinerary: day navigator, timeline with weather + crowd icons, saved places drawer -->
     <ItineraryPlanner :days="dayList" :selected-date="selectedDate" :stops="itinerary"
       :wishlist="allWishlist" :scheduled-names="scheduledNames" :day-name="tripDay" :weather-blocks="dayWeather" :typical="typicalWeather" :prefs="dayPrefs"
-      :can-add-day="!isDemo && !!startDate" :day-counts="dayCounts" :locked-by-day="lockedByDay" :day-issues="dayIssues" :destinations="destinations" :saved-routes="savedRoutes" :travellers="travellers"
-      @select-day="selectDay" @add-day="addDay" @remove-day="removeDay" @undo-day="undoDay" @add-place="openAddPlace" @go-vote="openVote"
+      :can-add-day="!isDemo && !!startDate" :day-counts="dayCounts" :day-issues="dayIssues" :destinations="destinations" :saved-routes="savedRoutes" :travellers="travellers"
+      @select-day="selectDay" @add-day="addDay" @remove-day="removeDay" @notice="showNotice" @undo-day="undoDay" @add-place="openAddPlace" @go-vote="openVote"
       @apply="applyOptimized" @lock="setLocked" @schedule="scheduleWish" @unschedule="unscheduleStop" @status="plannerStatus = $event"
-      @duration="setDuration" @move-day="moveToDay" @swap="swapWithWish" @edit="editStop" @open-transport="$emit('open-transport')"/>
+      @duration="setDuration" @move-day="moveToDay" @swap="swapWithWish" @edit="editStop" @open-transport="$emit('open-transport')" />
   </div>
 </template>
 
@@ -79,7 +79,13 @@ export default {
       plannerStatus: { kind: 'idle', text: 'Add places to this day and the schedule balances itself.' },
       weather: [], // every forecast entry: { date, time, span, condition, rain }
       weatherError: false,
-      simulateWeather: readSimulate(this.tripId), // demo: made-up weather instead of the live forecast
+      demoWeather: readSimulate(this.tripId), // demo: made-up weather instead of the live forecast
+      weatherSimulation: null,
+      // Example:
+      // {
+      //   stopId: 'abc123',
+      //   condition: 'Rain'
+      // }
       climate: [], // typical weather by month for each destination (for days beyond the 5-day forecast)
       climateRetried: false,
       mapsOff: false, // true once the server says Google Maps isn't set up
@@ -143,7 +149,7 @@ export default {
   },
 
   watch: {
-    simulateWeather(on) {
+    demoWeather(on) {
       try {
         localStorage.setItem('chuise-simulate-weather', on ? '1' : '0')
       } catch (err) {
@@ -186,17 +192,47 @@ export default {
       for (const s of trip.stops) counts[s.date] = (counts[s.date] || 0) + 1
       return counts
     },
-    // A locked stop (booking) per day: those days can't be removed
-    lockedByDay() {
-      const days = {}
-      for (const s of trip.stops) if (s.locked) days[s.date] = s.name
-      return days
-    },
     scheduledNames() {
       return trip.stops.map((s) => s.name)
     },
     isDemo() {
       return this.tripId === 'seoul'
+    },
+    effectiveWeather() {
+      if (!this.weatherSimulation) {
+        return this.weather
+      }
+
+      const stop = trip.stops.find(
+        (s) => s.id === this.weatherSimulation.stopId
+      )
+
+      if (!stop) {
+        return this.weather
+      }
+
+      return this.weather.map((w) => {
+        const duration = stop.duration || 1
+
+        const overlapsStop =
+          w.date === stop.date &&
+          w.time < stop.hour + duration &&
+          w.time + (w.span || 3) > stop.hour
+
+        if (!overlapsStop) {
+          return w
+        }
+
+        const rainy =
+          this.weatherSimulation.condition === 'Rain'
+
+        return {
+          ...w,
+          condition: rainy ? 'Rain' : 'Clear',
+          rain: rainy,
+          demoSimulation: true
+        }
+      })
     },
     // The selected day is too far ahead for a forecast: what's the weather usually like that month?
     typicalWeather() {
@@ -250,7 +286,9 @@ export default {
       return this.selectedDate ? DAY_NAMES[new Date(this.selectedDate + 'T00:00:00').getDay()] : ''
     },
     dayWeather() {
-      return this.weather.filter((w) => w.date === this.selectedDate)
+      return this.effectiveWeather.filter(
+        (w) => w.date === this.selectedDate
+      )
     },
 
     // The selected day's stops in time order. A new array each time, so the store itself is never reordered.
@@ -280,7 +318,7 @@ export default {
           const dur = s.duration || 1
           planned += dur
           let wet = false
-          for (const w of this.weather) {
+          for (const w of this.effectiveWeather) {
             if (w.date === d && w.rain && w.time < s.hour + dur && w.time + (w.span || 3) > s.hour) wet = true
           }
           if (s.outdoor && !s.locked && wet) issues++
@@ -415,15 +453,28 @@ export default {
       }
       this.snapshotDays()
       const keep = []
+
       for (const s of trip.stops) {
+        // Locked bookings always stay on their original calendar date.
+        if (s.locked) {
+          keep.push(s)
+          continue
+        }
+
         if (s.date === date) {
           this.backToWishlist(s, null)
         } else {
-          if (s.date > date) s.date = this.shiftDate(s.date, -1)
+          // Only unlocked stops on later days move earlier.
+          if (s.date > date) {
+            s.date = this.shiftDate(s.date, -1)
+          }
+
           keep.push(s)
         }
       }
+
       trip.stops = keep
+
       const newEnd = this.shiftDate(this.endDate, -1)
       if (this.selectedDate > newEnd) this.selectDay(newEnd)
       await this.updateTransitTimes()
@@ -610,7 +661,7 @@ export default {
     // The live forecast for the first destination (or the demo weather), then tell Packing what to expect
     async loadWeather() {
       try {
-        this.weather = await fetchWeatherForecast({ q: this.destination, dates: this.dayList, simulate: this.simulateWeather })
+        this.weather = await fetchWeatherForecast({ q: this.destination, dates: this.dayList, simulate: this.demoWeather })
         this.weatherError = false
       } catch (err) {
         this.weather = []
@@ -620,6 +671,49 @@ export default {
     },
     reportWeather() {
       this.$emit('weather-change', packingWeather({ blocks: this.weather, climate: this.climate, dates: this.dayList }))
+    },
+    // Find the weather that overlaps with a stop
+    weatherForStop(stop) {
+      if (!stop) return null
+
+      return this.weather.find((w) => {
+        const duration = stop.duration || 1
+
+        return (
+          w.date === stop.date &&
+          w.time < stop.hour + duration &&
+          w.time + (w.span || 3) > stop.hour
+        )
+      }) || null
+    },
+
+    // Start a temporary weather simulation
+    simulateWeather(stopId, condition) {
+      const stop = trip.stops.find(
+        (s) => s.id === stopId
+      )
+
+      if (!stop) return
+
+      this.weatherSimulation = {
+        stopId,
+        condition
+      }
+
+      this.showNotice(
+        `Demo: ${condition} weather simulated for ${this.shortName(stop.name)}.`,
+        'info'
+      )
+    },
+
+    // Return to the original simulated forecast
+    resetWeatherSimulation() {
+      this.weatherSimulation = null
+
+      this.showNotice(
+        'Weather simulation reset.',
+        'info'
+      )
     },
 
     // ---------- transit ----------

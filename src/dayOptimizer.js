@@ -176,9 +176,10 @@ export function scheduleInOrder(order, locked, matrix, opts) {
     if (queue.length) {
       const s = queue[0]
       const t = travel(prev, s)
-      // Arriving before it opens? Start when it opens (the wait counts against this order)
-      const arrive = quarter(time + t.min / 60 + (prev ? buffer : 0))
-      const start = s.open != null && arrive < s.open ? quarter(s.open) : arrive
+      const arrive = time + t.min / 60 + (prev ? buffer : 0)
+
+      // If we arrive before the place opens, wait until opening time.
+      const start = quarter(Math.max(arrive, s.open ?? arrive))
       const end = start + (s.duration || 1)
       // Would this stop run past the latest time to eat? Eat first.
       if (meal && end > meal.latest + 1e-9 && (!lock || Math.max(time, meal.from) + meal.duration <= lock.hour)) {
@@ -421,7 +422,11 @@ export function optimizeDay(stops, rainByHour, opts = {}) {
 
   const afterItems = scheduleInOrder(bestOrder, locked, matrix, options)
   const after = measure(afterItems, rainByHour, options)
-  const better = after.cost < before.cost - 1
+
+  const hasWarnings = afterItems.some(
+    (it) => warningsFor(it, rainByHour, options).length > 0
+  )
+
   const dayHasRain = (rainByHour || []).some((p) => p >= 0.5)
   let real = 0
   for (const it of afterItems) {
@@ -432,19 +437,10 @@ export function optimizeDay(stops, rainByHour, opts = {}) {
   return {
     before: { items: beforeItems, ...before },
     after: { items: afterItems, ...after },
-    better,
-    summary: better ? summarize(before, after) : stillToFix(before)
+    better: after.cost < before.cost - 1,
+    hasWarnings,
+    summary: summarize(before, after)
   }
-}
-
-// No better order: say what is still wrong (if anything), so "good order" is never said about a broken day
-function stillToFix(m) {
-  const left = []
-  if (m.closed) left.push(m.closed + (m.closed === 1 ? ' stop is' : ' stops are') + ' closed at the planned time')
-  if (m.lateMin) left.push('you can\'t get to a stop in time (' + m.lateMin + ' min late)')
-  if (m.overtimeMin) left.push('the day runs ' + m.overtimeMin + ' min past your end time')
-  if (!left.length) return 'Your day is already in a good order.'
-  return 'No better order found, but ' + left.join(' and ') + '. Try moving a stop to another day.'
 }
 
 function summarize(before, after) {

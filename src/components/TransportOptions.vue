@@ -5,17 +5,40 @@
     import CustomDropdown from './CustomDropdown.vue'
     
     const props = defineProps({
-        tripId: String, 
+        tripId: String,
         destination: String,
         stops: Array,
         stay: Object,
         startDate: [String, Object, Date],
         endDate: [String, Object, Date]
     });
+
+    const isJapan = computed(() => {
+        const destination = String(props.destination || '').toLowerCase();
+
+        const japanDestinations = [
+            'kyoto',
+            'tokyo',
+            'osaka',
+            'nara',
+            'sapporo',
+            'fukuoka',
+            'nagoya',
+            'hiroshima'
+        ];
+
+        return destination.includes('japan') ||
+            japanDestinations.some((city) => destination.includes(city));
+        });
     
     const startPoint = ref('');
     const endPoint = ref('');
     const options = ref([]);
+    const hasTransitOption = computed(() =>
+        options.value.some((opt) =>
+            ['Bus & Train', 'Train / MRT', 'Bus'].includes(opt.type)
+        )
+    );
     const loading = ref(false);
     const selectedTime = ref('08:30'); // stores as HH:mm format
     const selectedDay = ref('');
@@ -107,25 +130,50 @@
     }
 
     async function loadOptions() {
+        console.log('🚆 loadOptions() called', {
+            startPoint: startPoint.value,
+            endPoint: endPoint.value,
+            selectedDay: selectedDay.value,
+            selectedTime: selectedTime.value,
+            timeZone: timeZone.value
+        });
+
+        // Make sure start and destination exist
         if (!startPoint.value || !endPoint.value) {
             options.value = [];
             return;
         }
 
         loading.value = true;
+
         try {
-            // get address
+            // Get addresses
             const origin = addressOf(startPoint.value);
             const destination = addressOf(endPoint.value);
-            // if address could not be resolved
+
+            console.log('📍 Directions addresses:', {
+                origin,
+                destination
+            });
+
+            // If address could not be resolved
             if (!origin || !destination) {
                 options.value = [];
                 return;
             }
 
-            const isoTime = getIsoTime(selectedDay.value, selectedTime.value);
+            // Convert selected date/time into ISO format
+            const isoTime = getIsoTime(
+                selectedDay.value,
+                selectedTime.value
+            );
 
-            const queryParams = new URLSearchParams({ origin, destination });
+            // Build query parameters
+            const queryParams = new URLSearchParams({
+                origin,
+                destination
+            });
+
             if (isoTime) {
                 queryParams.set('time', isoTime);
                 queryParams.set('timeType', timeType.value);
@@ -219,19 +267,10 @@
         return hour > 0 ? `${hour} hour${hour === 1 ? '' : 's'} ${minText}` : minText;
     }
 
-    // Google Maps with the same start and end, for what Google's API doesn't give us
-    // (fares, taxi prices, train routes in Japan). travelmode: transit / driving / walking
-    function mapsUrl(opt) {
-        const mode = !opt ? 'transit' : /walk/i.test(opt.type) ? 'walking' : /taxi|car/i.test(opt.type) ? 'driving' : 'transit';
-        return 'https://www.google.com/maps/dir/?' + new URLSearchParams({
-            api: '1', origin: addressOf(startPoint.value) || '', destination: addressOf(endPoint.value) || '', travelmode: mode
-        });
-    }
-
     // format cost
     function formatCost(opt) {
         if (!opt || opt.cost === null || opt.cost === undefined) {
-            return 'Fare not provided by Google';
+            return 'Fare not provided';
         }
         // only when cost is 0
         if (opt.cost === 0) {
@@ -252,6 +291,22 @@
             return `${opt.cost} ${opt.currency}`;
         }
     }
+
+    function googleMapsUrl() {
+        const origin = addressOf(startPoint.value);
+        const destination = addressOf(endPoint.value);
+
+        if (!origin || !destination) return '#';
+
+        const params = new URLSearchParams({
+            api: '1',
+            origin,
+            destination,
+            travelmode: 'transit'
+        });
+
+        return `https://www.google.com/maps/dir/?${params.toString()}`;
+        }
 
     // auto fetch saved routes when the component loads
     onMounted(() => {
@@ -370,39 +425,71 @@
         <div v-else-if="!options.length" class="text-center text-muted py-3">
             <template v-if="endPoint && loadError">
                 {{ loadError }}
-                <a :href="mapsUrl(null)" target="_blank" rel="noopener">Open it in Google Maps ↗</a>
+                <a :href="googleMapsUrl()" target="_blank" rel="noopener">Open it in Google Maps ↗</a>
             </template>
             <template v-else-if="endPoint">
                 Google has no travel options for this route here (it has no train data for Japan, for example).
-                <a :href="mapsUrl(null)" target="_blank" rel="noopener">Open it in Google Maps ↗</a>
+                <a :href="googleMapsUrl()" target="_blank" rel="noopener">Open it in Google Maps ↗</a>
             </template>
             <template v-else>Select a destination to see travel options.</template>
         </div>
 
         <!-- Options Content -->
         <template v-else>
+            <!-- Japan train fallback when Google does not return transit routes -->
+            <div
+            v-if="isJapan && !hasTransitOption"
+            class="alert alert-light border mb-3"
+            >
+            <strong>Train routes:</strong>
+            <a
+                :href="googleMapsUrl()"
+                target="_blank"
+                rel="noopener noreferrer"
+            >
+                Open in Google Maps
+            </a>
+            </div>
             <!-- MOBILE VIEW (< md) -->
             <div class="d-block d-md-none">
                 <div v-for="opt in options" :key="opt.type + opt.route" class="p-3 border-bottom">
                     <div class="row align-items-center g-2">
                         <!-- Line 1: Type & Route -->
                         <div class="col-12 fw-semibold">
-                            {{ opt.type }} <span class="fw-normal text-muted">— {{ opt.route }}</span>
+                            {{ isJapan && opt.type === 'Car' ? 'Taxi' : opt.type }} <span class="fw-normal text-muted">— {{ opt.route }}</span>
                         </div>
                         <!-- Line 2: Duration & Cost -->
-                        <div class="col-8 d-flex gap-2 align-items-center">
+                        <!-- Line 2: Duration & Cost -->
+                        <div class="col-12 d-flex gap-2 align-items-center flex-wrap">
                             <span class="badge bg-dark text-white border">
                                 <i class="bi bi-clock me-1"></i>Duration: {{ formatDuration(opt.duration) }}
                             </span>
+
                             <span class="badge" :class="getCostBadge(opt)">
                                 Cost: {{ formatCost(opt) }}
                             </span>
                         </div>
-                        <!-- Action Button -->
-                        <div class="col-12 d-flex gap-2 justify-content-end">
-                            <a :href="mapsUrl(opt)" target="_blank" rel="noopener" class="btn btn-sm btn-outline-secondary">Maps ↗</a>
-                            <button type="button" class="btn btn-sm" :class="isSaved(opt) ? 'btn-outline-danger' : 'btn-outline-primary'" 
-                            @click="toggleSaved(opt)">
+
+                        <!-- Line 3: Google Maps & Save -->
+                        <div class="col-12 d-flex justify-content-between align-items-center mt-2">
+                            <a
+                                v-if="opt.cost === null || opt.cost === undefined"
+                                :href="googleMapsUrl()"
+                                target="_blank"
+                                rel="noopener noreferrer"
+                                class="small"
+                            >
+                                Open in Google Maps
+                            </a>
+
+                            <span v-else></span>
+
+                            <button
+                                type="button"
+                                class="btn btn-sm"
+                                :class="isSaved(opt) ? 'btn-outline-danger' : 'btn-outline-primary'"
+                                @click="toggleSaved(opt)"
+                            >
                                 {{ isSaved(opt) ? 'Unsave' : 'Save' }}
                             </button>
                         </div>
@@ -424,7 +511,7 @@
                     </thead>
                     <tbody>
                         <tr v-for="opt in options" :key="opt.type + opt.route">
-                            <td class="fw-semibold">{{ opt.type }}</td>
+                            <td class="fw-semibold">{{ isJapan && opt.type === 'Car' ? 'Taxi' : opt.type }}</td>
                             <td>{{ opt.route }}</td>
                             <td>
                                 <span class="badge bg-dark text-white border">
@@ -435,9 +522,22 @@
                                 <span class="badge" :class="getCostBadge(opt)">
                                     {{ formatCost(opt) }}
                                 </span>
-                            </td>
-                            <td class="text-center text-nowrap">
-                                <a :href="mapsUrl(opt)" target="_blank" rel="noopener" class="btn btn-sm btn-outline-secondary me-1">Maps ↗</a>
+
+                                <div
+                                    v-if="opt.cost === null || opt.cost === undefined"
+                                    class="mt-1"
+                                >
+                                    <a
+                                    :href="googleMapsUrl()"
+                                    target="_blank"
+                                    rel="noopener noreferrer"
+                                    class="small"
+                                    >
+                                    Open in Google Maps
+                                    </a>
+                                </div>
+                                </td>
+                            <td class="text-center">
                                 <button type="button" class="btn btn-sm" :class="isSaved(opt) ? 'btn-outline-danger' : 'btn-outline-primary'" 
                                 @click="toggleSaved(opt)">
                                     {{ isSaved(opt) ? 'Unsave' : 'Save' }}

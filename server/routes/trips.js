@@ -54,7 +54,8 @@ function cleanPacking(p) {
       if (!name) return null
       const category = PACKING_CATEGORIES.includes(c.category) ? c.category : 'other'
       const n = Math.min(99, Math.max(1, Math.floor(Number(c.qty) || 1)))
-      custom.push({ id: id(c.id), category, name, qty: n })
+      const by = c && typeof c.by === 'string' ? c.by.trim().slice(0, 40) : '' // who added it
+      custom.push({ id: id(c.id), category, name, qty: n, by })
     }
   }
   return { checked, qty, removed, custom }

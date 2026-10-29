@@ -63,3 +63,12 @@ test('packing: Amy and Ben tick different items, both stay ticked', async () => 
   const res = await get(t.id, t.ben, '/packing')
   assert.deepEqual(res.body.packing.checked, { passport: true, charger: true })
 })
+
+test('packing: an item someone adds keeps who added it', async () => {
+  const t = await makeTrip()
+  const empty = { checked: {}, qty: {}, removed: [], custom: [] }
+  const film = { id: 'mine-1', category: 'other', name: 'Film camera', qty: 1, by: 'Ben' }
+  await put(t.id, t.ben, '/packing', { packing: { ...empty, custom: [film] }, base: empty })
+  const res = await get(t.id, t.amy, '/packing')
+  assert.equal(res.body.packing.custom[0].by, 'Ben')
+})

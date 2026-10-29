@@ -167,7 +167,7 @@
           :weather="isDemo ? ['mild', 'rain'] : trip.weather || []"
           :extras="isDemo ? [] : trip.extras || []"
           :initial-packing="isDemo ? null : trip.packing"
-          :has-outdoor-activity="hasOutdoorActivity" :forecast-weather="forecastWeather" />
+          :has-outdoor-activity="hasOutdoorActivity" :forecast-weather="forecastWeather" :me="myName" />
       </div>
       <div v-show="activeTab === 'expenses'" id="pane-expenses" role="tabpanel">
         <ExpensesView :key="'xp-' + id" :trip-id="id" :travellers="itineraryInfo.travellers"

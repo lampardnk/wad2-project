@@ -149,7 +149,8 @@ export default {
     extras: { type: Array, default: () => [] },
     initialPacking: { type: Object, default: null },
     hasOutdoorActivity: { type: Boolean, default: false },
-    forecastWeather: { type: Array, default: () => [] } // what the forecast / typical weather says, e.g. ['hot', 'rain']
+    forecastWeather: { type: Array, default: () => [] }, // what the forecast / typical weather says, e.g. ['hot', 'rain']
+    me: { type: String, default: '' } // my traveller name, to tell my own added items from the others'
   },
 
   data() {
@@ -212,7 +213,7 @@ export default {
     items() {
       const list = []
       const suggested = buildPackingList({ days: this.days, ...this.profile, outdoor: this.hasOutdoorActivity })
-      for (const it of suggested.concat(this.packing.custom.map((c) => ({ ...c, why: 'Added by you' })))) {
+      for (const it of suggested.concat(this.packing.custom.map((c) => ({ ...c, why: c.by && c.by !== this.me ? 'Added by ' + c.by : 'Added by you' })))) {
         if (this.packing.removed.includes(it.id)) continue
         const qty = this.packing.qty[it.id] !== undefined ? this.packing.qty[it.id] : it.qty
         list.push({ ...it, qty })
@@ -323,7 +324,7 @@ export default {
     addItem(category) {
       const name = (this.newItem[category] || '').trim()
       if (!name) return
-      this.packing.custom.push({ id: 'mine-' + Date.now(), category, name, qty: 1 })
+      this.packing.custom.push({ id: 'mine-' + Date.now(), category, name, qty: 1, by: this.me })
       this.newItem[category] = ''
     },
 

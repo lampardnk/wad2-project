@@ -40,7 +40,13 @@ router.get('/', requireAuth, async (req, res) => {
     })
     data = await response.json()
   } catch (err) {
-    return res.status(502).json({ message: 'Place search is unavailable right now.' })
+    // Photon is busy or refusing us: ask Nominatim instead (the same OpenStreetMap places)
+    try {
+      const list = await getMapJson('https://nominatim.openstreetmap.org/search?' + new URLSearchParams({ q, format: 'jsonv2', limit: '10', addressdetails: '1', 'accept-language': 'en' }))
+      data = { features: list.map((r) => ({ properties: { name: r.name, country: (r.address || {}).country, countrycode: (r.address || {}).country_code, osm_value: r.addresstype } })) }
+    } catch {
+      return res.status(502).json({ message: 'Place search is unavailable right now.' })
+    }
   }
 
   // Rank what came back so travel destinations win over same-named small towns:
@@ -272,10 +278,17 @@ router.get('/attractions', requireAuth, async (req, res) => {
 
   try {
     // 1. Where is it?
-    const geoUrl = 'https://photon.komoot.io/api/?' + new URLSearchParams({ q: destination, limit: '1', lang: 'en', osm_tag: 'place' })
-    const geoRes = await fetch(geoUrl, { headers: HEADERS, signal: AbortSignal.timeout(8000) })
-    const geo = await geoRes.json()
-    const place = geo.features && geo.features[0]
+    let place
+    try {
+      const geoUrl = 'https://photon.komoot.io/api/?' + new URLSearchParams({ q: destination, limit: '1', lang: 'en', osm_tag: 'place' })
+      const geoRes = await fetch(geoUrl, { headers: HEADERS, signal: AbortSignal.timeout(8000) })
+      const geo = await geoRes.json()
+      place = geo.features && geo.features[0]
+    } catch (err) {
+      // Photon is busy or refusing us: Nominatim knows the same OpenStreetMap places
+      const r = (await getMapJson('https://nominatim.openstreetmap.org/search?' + new URLSearchParams({ q: destination, format: 'jsonv2', limit: '1', 'accept-language': 'en' })))[0]
+      if (r) place = { geometry: { coordinates: [Number(r.lon), Number(r.lat)] }, properties: { osm_type: r.osm_type === 'relation' ? 'R' : '', osm_id: r.osm_id, osm_value: r.addresstype } }
+    }
     if (!place) return res.json([])
     const props = place.properties || {}
     const [lon, lat] = place.geometry.coordinates
@@ -373,19 +386,22 @@ router.get('/attractions', requireAuth, async (req, res) => {
       const it = top[i]
       top[i] = { name: it.name, type: it.type, indoor: it.indoor, address: it.address, wiki: it.wiki, wikidata: it.wikidata, rank: it.rank }
     }
-    // c) Still nothing: famous places from Wikipedia near the centre
-    if (!top.length) {
+    // c) OpenStreetMap gave nothing: add famous places from Wikipedia near the centre
+    //    (after the hand-picked sights, so the list is full enough to save)
+    const fromOsm = (osm.elements || []).length > 0
+    if (!fromOsm) {
       try {
-        for (const item of await wikiNearby(lat, lon, destination)) top.push(item)
+        for (const item of await wikiNearby(lat, lon, destination)) {
+          if (top.length < 100 && !top.some((x) => plain(x.name) === plain(item.name))) top.push(item)
+        }
       } catch (err) {
         console.error('Wikipedia fallback failed for "' + destination + '":', err.message)
       }
     }
     if (!top.length) throw new Error('no source answered')
 
-    // Saved when OpenStreetMap answered; a Wikipedia-only list is saved for an hour (see above).
+    // Saved when OpenStreetMap answered; a list with Wikipedia places is saved for an hour (see above).
     // (A list of just the hand-picked sights is tried again next time.)
-    const fromOsm = (osm.elements || []).length > 0
     const fromWiki = top.some((x) => x.source === 'wikipedia')
     if (fromOsm || fromWiki) await Attraction.findOneAndUpdate({ key }, { key, items: top, fetchedAt: new Date(), fallback: !fromOsm }, { upsert: true })
     failedLookups.delete(key)

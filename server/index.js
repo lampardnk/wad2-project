@@ -30,8 +30,12 @@ import eatRoutes from './routes/eat.js'
 import discoverRoutes from './routes/discover.js'
 import iconRoutes from './routes/icons.js'
 import { rateLimit } from './rateLimit.js'
+import path from 'path'
+import { fileURLToPath } from 'url'
 
 const app = express()
+// Behind the public tunnel (cloudflared on this PC), use the visitor's real IP for rate limits
+app.set('trust proxy', 'loopback')
 app.use(cors())
 app.use(express.json())
 
@@ -79,6 +83,14 @@ app.get('/api/health', (req, res) => {
 
 // Catch any unexpected error so the server doesn't crash
 // (Express 5 sends errors from async routes here automatically)
+// The built app (pnpm share): files from dist/, and index.html for page addresses like /trip/123
+const DIST = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'dist')
+app.use(express.static(DIST))
+app.use((req, res, next) => {
+  if (req.method !== 'GET' || req.path.startsWith('/api')) return next()
+  res.sendFile(path.join(DIST, 'index.html'), (err) => err && next())
+})
+
 app.use((err, req, res, next) => {
   console.error(err)
   res.status(500).json({ message: 'Something went wrong on the server.' })

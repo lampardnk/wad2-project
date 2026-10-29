@@ -1,6 +1,6 @@
 import mongoose from 'mongoose'
 
-// An answer from an outside service (route times, place search, weather, exchange rates), see cache.js
+// An answer from an outside service (route times, place search, weather, exchange rates), see remembered in outside.js
 const cacheEntrySchema = new mongoose.Schema({
   key: { type: String, required: true, unique: true }, // 'routes|taipei 101|jiufen|...'
   value: { type: mongoose.Schema.Types.Mixed, default: null },

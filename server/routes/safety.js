@@ -1,14 +1,13 @@
 import express from 'express'
 import { requireAuth } from './auth.js'
-import { nominatim, photonOrBackup } from './places.js'
-import { askOverpass, remembered } from '../outside.js'
+import { fromNominatim, nominatim, photonOrBackup } from './places.js'
+import { askOverpass, remembered, MINUTE, DAY } from '../outside.js'
+import { kmBetween } from '../../src/utils/geo.js'
 
 // Safety tab helpers. These run on our server (not in the browser) so that:
 //  - busy OpenStreetMap servers are retried and results are remembered (no more 504s in the browser)
 //  - the same answer is reused by everyone on the trip
 const router = express.Router()
-const MINUTE = 60 * 1000
-const DAY = 24 * 60 * MINUTE
 
 // Photon (OpenStreetMap search). lang 'default' gives local names, e.g. Japanese.
 async function photon(params) {
@@ -25,19 +24,7 @@ async function photon(params) {
     let list = await nominatim(q, signal)
     // Nominatim needs every word to match: "Sun Moon Lake, Taipei" finds nothing (it isn't in Taipei)
     if (!list.length && q.q.includes(',')) list = await nominatim({ ...q, q: q.q.split(',')[0] }, signal)
-    return {
-      features: list.map((r) => {
-        const a = r.address || {}
-        return {
-          geometry: { coordinates: [Number(r.lon), Number(r.lat)] },
-          properties: {
-            name: r.name || (r.display_name || '').split(',')[0], osm_id: r.osm_id, osm_value: r.addresstype,
-            housenumber: a.house_number, street: a.road, district: a.suburb || a.neighbourhood,
-            city: a.city || a.town || a.village, postcode: a.postcode, country: a.country, countrycode: a.country_code
-          }
-        }
-      })
-    }
+    return fromNominatim(list)
   })
 }
 
@@ -62,12 +49,6 @@ function toResult(f, place) {
     countryCode: (p.countrycode || '').toUpperCase(),
     countryName: p.country || ''
   }
-}
-function kmBetween(a, b) {
-  const r = Math.PI / 180
-  const x = (b.lon - a.lon) * r * Math.cos(((a.lat + b.lat) / 2) * r)
-  const y = (b.lat - a.lat) * r
-  return Math.sqrt(x * x + y * y) * 6371
 }
 
 // A place's coordinates (null = not found). Found places are remembered for 30 days and "not found"
@@ -168,9 +149,7 @@ function toPlaces(elements) {
   const places = []
   for (const el of elements || []) {
     const t = el.tags || {}
-    const pLat = el.lat !== undefined ? el.lat : el.center && el.center.lat
-    const pLon = el.lon !== undefined ? el.lon : el.center && el.center.lon
-    if (pLat === undefined) continue
+    if (el.lat === undefined) continue
     let kind = t.amenity
     if (t.emergency === 'assembly_point' || t.amenity === 'shelter') kind = 'shelter'
     if (t.diplomatic === 'embassy' || t.amenity === 'embassy') kind = 'embassy'
@@ -179,21 +158,14 @@ function toPlaces(elements) {
       kind,
       name: t['name:en'] || t.name || LABELS[kind] || 'Unnamed',
       nameLocal: t['name:en'] && t.name && t.name !== t['name:en'] ? t.name : '',
-      lat: pLat,
-      lon: pLon,
+      lat: el.lat,
+      lon: el.lon,
       phone: t.phone || t['contact:phone'] || null,
       openingHours: t.opening_hours || null, // e.g. "24/7" or "Mo-Fr 09:00-18:00; Sa 09:00-12:00"
       emergency: t.emergency === 'yes' // hospitals with an A&E
     })
   }
   return places
-}
-
-function km(aLat, aLon, bLat, bLon) {
-  const r = Math.PI / 180
-  const x = (bLon - aLon) * r * Math.cos(((aLat + bLat) / 2) * r)
-  const y = (bLat - aLat) * r
-  return Math.sqrt(x * x + y * y) * 6371
 }
 
 // Backup when Overpass is down: Photon (fast OpenStreetMap search), one search per kind, kept within 8 km
@@ -209,7 +181,7 @@ async function photonNearby(lat, lon) {
       const p = f.properties || {}
       const pLat = f.geometry.coordinates[1]
       const pLon = f.geometry.coordinates[0]
-      if (km(lat, lon, pLat, pLon) > 8) continue
+      if (kmBetween({ lat, lon }, { lat: pLat, lon: pLon }) > 8) continue
       places.push({
         id: (p.osm_type || 'x') + p.osm_id,
         kind: kinds[i],
@@ -230,7 +202,7 @@ async function photonNearby(lat, lon) {
 // GET /api/safety/nearby?lat=35.0&lon=135.7&home=SG
 // -> hospitals, clinics, police, fire stations, evacuation points / shelters within 3 km,
 //    plus your country's embassy within 40 km. Each: { id, kind, name, lat, lon, phone, openingHours, emergency }
-// Fast path: every Overpass server is asked at once; the embassy search runs alongside;
+// Overpass (its servers one after another, see outside.js), with the embassy search alongside;
 // if Overpass is down, Photon fills in hospitals/clinics/police/fire stations within a few seconds.
 const round2 = (n) => Math.round(Number(n) * 100) / 100 // about 1 km: walking around reuses the same answer
 router.get('/nearby', requireAuth, async (req, res) => {

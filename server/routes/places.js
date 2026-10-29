@@ -1,7 +1,8 @@
 import express from 'express'
 import { requireAuth } from './auth.js'
 import Attraction from '../models/Attraction.js'
-import { ask, askOverpass, isResting, remembered, shared } from '../outside.js'
+import { ask, askOverpass, isResting, remembered, shared, DAY } from '../outside.js'
+import { kmBetween } from '../../src/utils/geo.js'
 import fs from 'fs'
 import path from 'path'
 import { fileURLToPath } from 'url'
@@ -36,8 +37,7 @@ router.get('/', requireAuth, async (req, res) => {
 async function findDestinations(q) {
   // Photon is busy or refusing us: ask Nominatim instead (the same OpenStreetMap places)
   const data = await photonOrBackup({ q, limit: '15', lang: 'en', osm_tag: 'place' }, async (signal) => {
-      const list = await nominatim({ q, limit: '10', addressdetails: '1', 'accept-language': 'en' }, signal, { urgent: true })
-      return { features: list.map((r) => ({ properties: { name: r.name, country: (r.address || {}).country, countrycode: (r.address || {}).country_code, osm_value: r.addresstype } })) }
+      return fromNominatim(await nominatim({ q, limit: '10', addressdetails: '1', 'accept-language': 'en' }, signal, { urgent: true }))
     })
 
   // Rank what came back so travel destinations win over same-named small towns:
@@ -82,7 +82,6 @@ async function findDestinations(q) {
 const TYPES = 'attraction|museum|gallery|viewpoint|zoo|theme_park|aquarium'
 const INDOOR_TYPES = ['museum', 'gallery', 'aquarium']
 const CACHE_DAYS = 30
-const DAY = 24 * 60 * 60 * 1000
 // Backup source: Wikipedia articles within 10 km that look like places to visit
 // (titles are checked for words like museum, park, mosque, so streets and schools are left out)
 const WIKI_KINDS = [
@@ -217,8 +216,7 @@ async function lookUpAttractions(destination, key) {
   // 1. Where is it?
   // Photon is busy or refusing us: Nominatim knows the same OpenStreetMap places
   const geo = await photonOrBackup({ q: destination, limit: '1', lang: 'en', osm_tag: 'place' }, async (signal) => {
-    const r = (await nominatim({ q: destination, limit: '1', 'accept-language': 'en' }, signal))[0]
-    return { features: r ? [{ geometry: { coordinates: [Number(r.lon), Number(r.lat)] }, properties: { osm_type: r.osm_type === 'relation' ? 'R' : '', osm_id: r.osm_id, osm_value: r.addresstype } }] : [] }
+    return fromNominatim(await nominatim({ q: destination, limit: '1', 'accept-language': 'en' }, signal))
   })
   const place = geo.features && geo.features[0]
   if (!place) return []
@@ -530,18 +528,22 @@ export async function photonOrBackup(params, backup) {
   }
 }
 
-// Nominatim (OpenStreetMap's own search) answers in a different shape: turn it into Photon's
-function fromNominatim(list) {
+// Nominatim (OpenStreetMap's own search) answers in a different shape: turn it into Photon's,
+// so every Photon search can use Nominatim as its backup
+export function fromNominatim(list) {
   const features = []
   for (const r of list || []) {
     const a = r.address || {}
+    // Towns and countries: Photon calls them place=city / place=country (Nominatim: their addresstype)
+    const isPlace = r.category === 'place' || r.category === 'boundary'
     features.push({
       geometry: { coordinates: [Number(r.lon), Number(r.lat)] },
       properties: {
         name: r.name || (r.display_name || '').split(',')[0],
-        osm_key: r.category, osm_value: r.type,
-        housenumber: a.house_number, street: a.road,
-        district: a.suburb || a.neighbourhood, city: a.city || a.town || a.village
+        osm_key: isPlace ? 'place' : r.category, osm_value: isPlace ? r.addresstype : r.type,
+        osm_type: String(r.osm_type || '').charAt(0).toUpperCase(), osm_id: r.osm_id, // 'R' = relation
+        housenumber: a.house_number, street: a.road, district: a.suburb || a.neighbourhood,
+        city: a.city || a.town || a.village, postcode: a.postcode, country: a.country, countrycode: a.country_code
       }
     })
   }
@@ -580,28 +582,22 @@ function matchScore(typed, name) {
   if (n.includes(q)) return 25
   return 0 // the map service matched it loosely (a typo, or the address)
 }
-function kmBetween(lat1, lon1, lat2, lon2) {
-  const r = Math.PI / 180
-  const a = Math.sin((lat2 - lat1) * r / 2) ** 2 + Math.cos(lat1 * r) * Math.cos(lat2 * r) * Math.sin((lon2 - lon1) * r / 2) ** 2
-  return 12742 * Math.asin(Math.sqrt(a))
-}
 
-// Saved for a month (see cache.js); not found is asked again after a day
+// Saved for a month (see remembered in outside.js); not found is asked again after a day
 function findCentre(destination) {
   return remembered('centre|' + plain(destination), (c) => (c ? 30 * DAY : DAY), () => lookUpCentre(destination))
 }
 async function lookUpCentre(destination) {
   let centre = null
   const data = await photonOrBackup({ q: destination, limit: '1', lang: 'en', osm_tag: 'place' }, async (signal) => {
-    const list = await nominatim({ q: destination, limit: '1', 'accept-language': 'en' }, signal, { urgent: true }) // only place search needs it
-    return { features: list.slice(0, 1).map((r) => ({ geometry: { coordinates: [Number(r.lon), Number(r.lat)] }, properties: { osm_value: r.addresstype } })) }
+    return fromNominatim(await nominatim({ q: destination, limit: '1', 'accept-language': 'en' }, signal, { urgent: true })) // only place search needs it
   })
   const f = data.features && data.features[0]
   if (f) centre = { lon: f.geometry.coordinates[0], lat: f.geometry.coordinates[1], isCountry: f.properties.osm_value === 'country' }
   return centre
 }
 
-// Places search answers are saved for a week (see cache.js): typing the same name again, or
+// Places search answers are saved for a week (see remembered in outside.js): typing the same name again, or
 // someone else on the trip searching it, costs nothing and is instant
 router.get('/search', requireAuth, async (req, res) => {
   const q = (req.query.q || '').trim()
@@ -652,7 +648,7 @@ async function searchPlaces(q, near) {
     const street = [p.housenumber, p.street].filter(Boolean).join(' ')
     const address = [street, p.district || p.locality, p.city].filter(Boolean).join(', ') || p.name + ', ' + near
     const coords = f.geometry && f.geometry.coordinates
-    const km = coords && centre ? Math.round(kmBetween(centre.lat, centre.lon, coords[1], coords[0]) * 10) / 10 : null
+    const km = coords && centre ? Math.round(kmBetween(centre, { lat: coords[1], lon: coords[0] }) * 10) / 10 : null
 
     let group = null
     for (const g of groups) {

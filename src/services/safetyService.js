@@ -25,6 +25,7 @@
   ALGORITHMS: Haversine distance, our combined 0-100 risk score (see computeRiskScore).
 */
 import axios from 'axios'
+import { kmBetween } from '../utils/geo.js'
 
 const GEOCODE_URL = 'https://api.bigdatacloud.net/data/reverse-geocode-client'
 const FCDO_URL = 'https://www.gov.uk/api/content/foreign-travel-advice/'
@@ -90,19 +91,6 @@ export const EMERGENCY_NUMBERS = {
 
 /* For Singaporeans abroad: MFA's 24-hour duty office (lost passport, arrests, disasters) */
 export const HOME_HELPLINE = { icon: '🇸🇬', label: 'Singapore MFA 24h duty office', number: '+65 6379 8800' }
-
-/*
-  haversineKm()
-  Straight-line distance in km between two lat/lon points on Earth (radius 6371 km).
-*/
-export function haversineKm(lat1, lon1, lat2, lon2) {
-  const R = 6371
-  const toRad = (deg) => (deg * Math.PI) / 180
-  const dLat = toRad(lat2 - lat1)
-  const dLon = toRad(lon2 - lon1)
-  const a = Math.sin(dLat / 2) ** 2 + Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) * Math.sin(dLon / 2) ** 2
-  return 2 * R * Math.asin(Math.sqrt(a))
-}
 
 /* Compass bearing from point 1 to point 2 in degrees (0 = north), used by the radar */
 export function bearingDeg(lat1, lon1, lat2, lon2) {
@@ -221,7 +209,7 @@ export async function getNearbyEarthquakes(lat, lon, radiusKm = 300, days = 3) {
       place: f.properties.place,
       magnitude: f.properties.mag,
       tsunami: f.properties.tsunami === 1,
-      distanceKm: Math.round(haversineKm(lat, lon, qLat, qLon)),
+      distanceKm: Math.round(kmBetween({ lat, lon }, { lat: qLat, lon: qLon })),
       time: new Date(f.properties.time),
       url: f.properties.url
     }
@@ -236,7 +224,7 @@ export const DISASTER_REACH_KM = { EQ: 300, TC: 500, FL: 150, VO: 100, DR: Infin
 export function nearDisaster(f, lat, lon) {
   const c = f.geometry && f.geometry.type === 'Point' ? f.geometry.coordinates : null
   if (!c || lat === undefined || lat === null) return { near: true, distanceKm: null }
-  const distanceKm = Math.round(haversineKm(lat, lon, c[1], c[0]))
+  const distanceKm = Math.round(kmBetween({ lat, lon }, { lat: c[1], lon: c[0] }))
   const reach = DISASTER_REACH_KM[f.properties.eventtype] || 200
   return { near: distanceKm <= reach, distanceKm: reach === Infinity ? null : distanceKm }
 }

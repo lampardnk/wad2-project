@@ -4,10 +4,9 @@ import fs from 'fs'
 import path from 'path'
 import { fileURLToPath } from 'url'
 import { requireAuth } from './auth.js'
-import { ask, remembered } from '../outside.js'
+import { ask, remembered, DAY } from '../outside.js'
 
 const router = express.Router()
-const DAY = 24 * 60 * 60 * 1000
 
 async function holidaysFor(cc, year) {
   try {

@@ -2,7 +2,7 @@ import express from 'express'
 import fs from 'fs'
 import path from 'path'
 import { fileURLToPath } from 'url'
-import { ask, remembered } from '../outside.js'
+import { ask, remembered, HOUR } from '../outside.js'
 
 // GET /api/icons/Backpack -> a 3D picture of a backpack (PNG)
 // The pictures are Microsoft's free Fluent Emoji 3D set (MIT licence, github.com/microsoft/fluentui-emoji).
@@ -22,7 +22,7 @@ router.get('/:name', async (req, res) => {
 
   // A picture that doesn't exist is remembered for an hour (false); a found one is saved as a file instead
   try {
-    await remembered('icon-missing|' + name, 60 * 60 * 1000, async () => {
+    await remembered('icon-missing|' + name, HOUR, async () => {
       // "Hiking boot" -> assets/Hiking boot/3D/hiking_boot_3d.png
       const url = BASE + encodeURIComponent(name) + '/3D/' + encodeURIComponent(name.toLowerCase().replace(/ /g, '_')) + '_3d.png'
       const response = await ask('github', url)

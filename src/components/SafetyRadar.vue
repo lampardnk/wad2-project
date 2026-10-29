@@ -55,7 +55,8 @@
 </template>
 
 <script>
-import { haversineKm, bearingDeg } from '../services/safetyService.js'
+import { bearingDeg } from '../services/safetyService.js'
+import { kmBetween } from '../utils/geo.js'
 
 // Category colours: validated for colour-blind separation on the dark surface; each also has a letter
 const KINDS = [
@@ -99,7 +100,7 @@ export default {
       const list = []
       for (const p of this.places.concat(this.stops)) {
         if (p.lat === undefined || p.lat === null) continue
-        const dist = haversineKm(this.center.lat, this.center.lon, p.lat, p.lon)
+        const dist = kmBetween(this.center, p)
         if (dist > this.radiusKm) continue
         const deg = bearingDeg(this.center.lat, this.center.lon, p.lat, p.lon)
         const rad = (deg * Math.PI) / 180

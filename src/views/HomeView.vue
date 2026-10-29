@@ -297,15 +297,9 @@ import { POPULAR_DESTINATIONS, codeForDestination, countryOf, flagEmoji } from '
 import AppIcon from '../components/AppIcon.vue'
 import TravelMap from '../components/TravelMap.vue'
 import { needsSetup, setupDone } from '../onboarding.js'
+import { kmBetween } from '../utils/geo.js'
 
 const DAY_MS = 86400000
-
-// Straight-line distance between two { lat, lon } points, in km
-function kmBetween(a, b) {
-  const r = Math.PI / 180
-  const h = Math.sin((b.lat - a.lat) * r / 2) ** 2 + Math.cos(a.lat * r) * Math.cos(b.lat * r) * Math.sin((b.lon - a.lon) * r / 2) ** 2
-  return 12742 * Math.asin(Math.sqrt(h))
-}
 
 const STAGES = [
   { key: 'planning', label: 'Planning' },

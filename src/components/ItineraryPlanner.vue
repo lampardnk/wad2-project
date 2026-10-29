@@ -655,7 +655,8 @@
 // Times are worked out by dayOptimizer.js: flexible stops follow each other, locked ones keep their time.
 import { ref, computed, watch, nextTick, onMounted, onBeforeUnmount } from 'vue'
 import axios from 'axios'
-import { optimizeDay, scheduleInOrder, scheduleAsIs, travelMatrix, warningsFor, rainFromBlocks, haversineKm, addMealBreaks, defaultDuration, crowdAt, rainDuring } from '../dayOptimizer.js'
+import { optimizeDay, scheduleInOrder, scheduleAsIs, travelMatrix, warningsFor, rainFromBlocks, addMealBreaks, defaultDuration, crowdAt, rainDuring } from '../dayOptimizer.js'
+import { kmBetween } from '../utils/geo.js'
 import { PLANNER_SAMPLE } from '../dayOptimizerSample.js'
 import { loadLeaflet } from '../services/leaflet.js'
 import EatDrawer from './EatDrawer.vue'
@@ -1587,7 +1588,7 @@ function otherCityOnDay(w) {
       if (wCity !== sCity) return sCity
       continue
     }
-    if (wPoint && it.stop.lat != null && haversineKm(wPoint, it.stop) > 40) return sCity || 'another city'
+    if (wPoint && it.stop.lat != null && kmBetween(wPoint, it.stop) > 40) return sCity || 'another city'
   }
   return null
 }

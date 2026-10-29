@@ -1,6 +1,6 @@
 import express from 'express'
 import { requireAuth } from './auth.js'
-import { ask, remembered } from '../outside.js'
+import { ask, remembered, MINUTE } from '../outside.js'
 
 const router = express.Router()
 
@@ -20,7 +20,7 @@ router.get('/', requireAuth, async (req, res) => {
   // null = no live data for that flight (also remembered, to save the monthly allowance)
   let data
   try {
-    data = await remembered('flight|' + flight, CACHE_MINUTES * 60 * 1000, () => lookUpFlight(flight))
+    data = await remembered('flight|' + flight, CACHE_MINUTES * MINUTE, () => lookUpFlight(flight))
   } catch (err) {
     return res.status(502).json({ message: 'Flight service error. Try again later.' })
   }

@@ -1,14 +1,13 @@
 import express from 'express'
 import { requireAuth } from './auth.js'
-import { ask, remembered } from '../outside.js'
+import { ask, remembered, HOUR } from '../outside.js'
 
 const router = express.Router()
 
 // GET /api/rates?base=SGD  ->  { base: 'SGD', date: '2026-10-09', rates: { SGD: 1, KRW: 1031.2, JPY: 115.4, ... } }
 // Frankfurter: free exchange rates from the European Central Bank, no key needed.
-// Rates change once a day, so each base currency is saved for 6 hours (see cache.js).
+// Rates change once a day, so each base currency is saved for 6 hours (see remembered in outside.js).
 // If both sources fail, the last saved rates are used.
-const SIX_HOURS = 6 * 60 * 60 * 1000
 const SOURCES = [
   (base) => 'https://api.frankfurter.dev/v1/latest?base=' + base,
   (base) => 'https://api.frankfurter.app/latest?from=' + base
@@ -19,7 +18,7 @@ router.get('/', requireAuth, async (req, res) => {
   if (!/^[A-Z]{3}$/.test(base)) return res.status(400).json({ message: 'Currency must be a 3-letter code like SGD.' })
 
   try {
-    const data = await remembered('rates|' + base, SIX_HOURS, async () => {
+    const data = await remembered('rates|' + base, 6 * HOUR, async () => {
       let lastError = null
       for (const source of SOURCES) {
         try {

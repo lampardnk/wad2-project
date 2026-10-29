@@ -25,13 +25,7 @@ import TravelMap from './TravelMap.vue'
 import { codeForDestination } from '../destinations.js'
 import { userSettings } from '../userSettings.js'
 import { toHome } from '../expenses.js'
-
-// Straight-line distance between two { lat, lon } points, in km
-function kmBetween(a, b) {
-  const r = Math.PI / 180
-  const h = Math.sin((b.lat - a.lat) * r / 2) ** 2 + Math.cos(a.lat * r) * Math.cos(b.lat * r) * Math.sin((b.lon - a.lon) * r / 2) ** 2
-  return 12742 * Math.asin(Math.sqrt(h))
-}
+import { kmBetween } from '../utils/geo.js'
 
 export default {
   components: { TravelMap },

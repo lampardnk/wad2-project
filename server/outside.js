@@ -13,11 +13,14 @@ import CacheEntry from './models/CacheEntry.js'
 //
 // remembered(key, keepFor, ask)   asks each question once (memory + MongoDB, see below)
 // shared(key, work)               two requests for the same thing at the same moment share one answer
-// askOverpass(query, waitSeconds) OpenStreetMap's Overpass, one public server after another
+// askOverpass(query, waitSeconds) OpenStreetMap's Overpass, one public server after another;
+//                                 every element has lat/lon (streets and areas: their centre)
 const UA = 'ChuiseYourTrip/1.0 (SMU IS216 student project)'
-const SECOND = 1000
-const MINUTE = 60 * SECOND
-const DAY = 24 * 60 * MINUTE
+// Time in ms, for timeouts and how long remembered() keeps an answer
+export const SECOND = 1000
+export const MINUTE = 60 * SECOND
+export const HOUR = 60 * MINUTE
+export const DAY = 24 * HOUR
 
 const SERVICES = {
   nominatim: { gap: 1100, max: 1 }, // its usage policy: 1 request a second
@@ -162,6 +165,9 @@ export async function askOverpass(query, waitSeconds) {
       if (data.remark && !(data.elements || []).length) {
         rest(service)
         throw new Error(data.remark)
+      }
+      for (const el of data.elements || []) {
+        if (el.lat === undefined && el.center) Object.assign(el, el.center)
       }
       return data
     } catch (err) {

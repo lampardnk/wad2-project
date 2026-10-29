@@ -25,8 +25,9 @@ import axios from 'axios'
 import SafetyRadar from './SafetyRadar.vue'
 import {
   getLocationInfo, locatePlace, getTravelAdvisory, getNearbyEarthquakes, getDisasterAlerts,
-  getNearbySafety, computeRiskScore, haversineKm, openStatus, EMERGENCY_NUMBERS, HOME_HELPLINE
+  getNearbySafety, computeRiskScore, openStatus, EMERGENCY_NUMBERS, HOME_HELPLINE
 } from '../services/safetyService.js'
+import { kmBetween } from '../utils/geo.js'
 
 const props = defineProps({
   tripId: { type: String, default: '' },
@@ -149,7 +150,7 @@ const optionsByKind = computed(() => {
     for (const p of places.value || []) {
       if (p.kind !== g.kind) continue
       const status = openStatus(p.openingHours)
-      list.push({ ...p, dist: haversineKm(position.value.lat, position.value.lon, p.lat, p.lon), status })
+      list.push({ ...p, dist: kmBetween(position.value, p), status })
     }
     // Nearest first, but when you're there, places that are open (or 24h A&E) come before closed ones
     list.sort((a, b) => {
@@ -178,7 +179,7 @@ function searchUrl(term) {
 async function refresh(force = false) {
   if (!position.value) return
   const { lat, lon } = position.value
-  if (!force && lastFetchedAt && haversineKm(lat, lon, lastFetchedAt.lat, lastFetchedAt.lon) < MOVE_THRESHOLD_KM) return
+  if (!force && lastFetchedAt && kmBetween({ lat, lon }, lastFetchedAt) < MOVE_THRESHOLD_KM) return
   const run = ++refreshRun
   const area0 = areaRun
   const isCurrent = () => run === refreshRun && area0 === areaRun
@@ -289,7 +290,7 @@ async function useArea(key) {
     locationInfo.value = { countryCode: place.countryCode, countryName: place.countryName, city: place.city }
     // Centre on the hotel if it's in this destination (within 60 km)
     const s = stayShown.value
-    if (s && s.lat !== null && s.lat !== undefined && haversineKm(s.lat, s.lon, place.lat, place.lon) < 60) {
+    if (s && s.lat !== null && s.lat !== undefined && kmBetween(s, place) < 60) {
       position.value = { lat: s.lat, lon: s.lon }
     } else {
       position.value = { lat: place.lat, lon: place.lon }

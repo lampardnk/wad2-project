@@ -20,6 +20,8 @@
 //     and keep the cheapest. Then explain each stop's time with short "reason" pills.
 // =====================================================================
 
+import { kmBetween } from './utils/geo.js'
+
 // How much each problem counts (in "minutes of travel" so they can be added up)
 export const WEIGHTS = {
   travel: 1,     // per minute travelling
@@ -33,19 +35,11 @@ export const WEIGHTS = {
 }
 
 // ---------- distances ----------
-export function haversineKm(a, b) {
-  const r = Math.PI / 180
-  const dLat = (b.lat - a.lat) * r
-  const dLon = (b.lon - a.lon) * r
-  const x = Math.sin(dLat / 2) ** 2 + Math.cos(a.lat * r) * Math.cos(b.lat * r) * Math.sin(dLon / 2) ** 2
-  return 2 * 6371 * Math.asin(Math.sqrt(x))
-}
-
 // Short hops are walked; longer ones by public transport (with a few minutes' wait).
 // Unknown places (no address) count as 15 min.
 export function travelBetween(a, b) {
   if (!a || !b || a.lat == null || b.lat == null) return { min: 15, mode: 'unknown', km: null }
-  const km = haversineKm(a, b)
+  const km = kmBetween(a, b)
   if (km <= 1.3) return { min: Math.max(3, Math.round((km * 1.25) / 4.8 * 60)), mode: 'walk', km }
   return { min: Math.round(8 + (km * 1.3) / 22 * 60), mode: 'transit', km }
 }

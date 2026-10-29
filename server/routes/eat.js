@@ -1,13 +1,12 @@
 import express from 'express'
 import { requireAuth } from './auth.js'
-import { ask, askOverpass, remembered } from '../outside.js'
+import { ask, askOverpass, remembered, DAY } from '../outside.js'
 
 // GET /api/eat?lat=30.66&lon=104.06
 // -> places to eat within about 1.2 km (OpenStreetMap):
 //    [{ id, name, kind, cuisine[], lat, lon, openingHours, diet: { vegetarian, vegan, halal, glutenFree }, address, website }]
 // Backup: Photon (OpenStreetMap search) when Overpass is busy. Answers are cached for a day per ~100 m.
 const router = express.Router()
-const DAY = 24 * 60 * 60 * 1000
 
 const round3 = (n) => Math.round(Number(n) * 1000) / 1000
 const yes = (v) => v === 'yes' || v === 'only'
@@ -40,10 +39,8 @@ async function fromOverpass(lat, lon) {
   const data = await askOverpass(q, 12)
   const out = []
   for (const el of data.elements || []) {
-    const pLat = el.lat !== undefined ? el.lat : el.center && el.center.lat
-    const pLon = el.lon !== undefined ? el.lon : el.center && el.center.lon
-    if (pLat === undefined || !el.tags || !el.tags.name) continue
-    out.push(fromTags(el.type + el.id, el.tags, pLat, pLon))
+    if (el.lat === undefined || !el.tags || !el.tags.name) continue
+    out.push(fromTags(el.type + el.id, el.tags, el.lat, el.lon))
   }
   return out
 }

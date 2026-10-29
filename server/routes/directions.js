@@ -2,7 +2,7 @@ import express from 'express';
 import SavedRoute from '../models/transport.js';
 import { requireAuth } from './auth.js';
 import { findTripFor } from '../tripAccess.js';
-import { ask, remembered } from '../outside.js';
+import { ask, remembered, DAY } from '../outside.js';
 const router = express.Router();
 
 // different transport modes
@@ -229,7 +229,7 @@ router.get('/', requireAuth, async (req, res) => {
     const key = ['routes', origin, destination, when].join('|').toLowerCase();
 
     try {
-        const unique = await remembered(key, 24 * 60 * 60 * 1000, async () => {
+        const unique = await remembered(key, DAY, async () => {
             // fetch all modes
             const rawResults = await Promise.all(MODES.map(m => fetchMode(origin, destination, m, timeOpts)));
             // removing failed results

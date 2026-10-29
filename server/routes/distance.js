@@ -1,10 +1,9 @@
 import express from 'express'
 import { requireAuth } from './auth.js'
-import { ask, remembered } from '../outside.js'
+import { ask, remembered, DAY } from '../outside.js'
 
 const router = express.Router()
 
-const DAY = 24 * 60 * 60 * 1000
 const MODES = { transit: 'TRANSIT', walking: 'WALK', driving: 'DRIVE', bicycling: 'BICYCLE' }
 
 // GET /api/distance-matrix?origin=...&destination=...&mode=transit

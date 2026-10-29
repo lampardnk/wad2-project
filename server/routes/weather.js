@@ -1,14 +1,12 @@
 import express from 'express'
 import { requireAuth } from './auth.js'
-import { ask, remembered } from '../outside.js'
+import { ask, remembered, MINUTE, DAY } from '../outside.js'
 
 const router = express.Router()
 
-const MINUTE = 60 * 1000
-const DAY = 24 * 60 * MINUTE
 
 // GET /api/weather?lat=37.56&lon=126.97   OR   /api/weather?q=Kyoto, Japan
-// Answers are saved (see cache.js): a place's coordinates for a year, a forecast for 15 minutes.
+// Answers are saved (see remembered in outside.js): a place's coordinates for a year, a forecast for 15 minutes.
 router.get('/', requireAuth, async (req, res) => {
   const key = process.env.OPENWEATHER_API_KEY
   if (!key) {

@@ -1,0 +1,32 @@
+# CI: every push and pull request builds the app and runs the tests.
+# CD: Vercel deploys by itself (it is connected to this repo): main -> the live site,
+#     other branches and pull requests -> a preview link.
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: |
+            pnpm-lock.yaml
+            server/pnpm-lock.yaml
+      - name: Install
+        run: |
+          pnpm install --frozen-lockfile
+          pnpm --dir server install --frozen-lockfile
+      - name: Build
+        run: pnpm build
+      - name: Unit tests
+        run: pnpm test
+      - name: Server tests (two devices editing one trip)
+        run: pnpm test:server
